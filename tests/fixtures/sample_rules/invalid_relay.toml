@@ -1,0 +1,12 @@
+# Rule with dangling relay target -- must parse as valid TOML but
+# fail validate_relay_targets() because "NonExistentRule" does not exist.
+
+[[rules]]
+name = "DanglingRelay"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["conf"]
+action = "Relay"
+relay_targets = ["NonExistentRule"]
+description = "This rule references a relay target that does not exist"

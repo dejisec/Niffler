@@ -1,0 +1,104 @@
+[[rules]]
+name = "EnvFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['\.env(\.(local|dev|staging|prod|production|backup|example|sample|test))?$']
+action = "Relay"
+relay_targets = ["CredentialPatterns", "CloudKeyPatterns"]
+description = "Environment variable files -- likely contain secrets"
+
+[[rules]]
+name = "ConfigFileExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["yaml", "yml", "json", "toml", "ini", "cfg", "conf", "cnf", "config"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "ConnectionStrings"]
+description = "Configuration files -- may contain embedded credentials or connection strings"
+
+[[rules]]
+name = "ShellScriptExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["sh", "bash", "zsh", "ksh", "csh"]
+action = "Relay"
+relay_targets = ["CredentialPatterns"]
+description = "Shell scripts -- may contain hardcoded credentials"
+
+[[rules]]
+name = "PythonFiles"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["py"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "CloudKeyPatterns"]
+description = "Python files -- may contain hardcoded API keys and credentials"
+
+[[rules]]
+name = "DockerFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['^[Dd]ockerfile', '^docker-compose']
+action = "Relay"
+relay_targets = ["CredentialPatterns"]
+description = "Docker configuration files -- may contain embedded secrets"
+
+[[rules]]
+name = "GitCredentialFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [".gitconfig", ".git-credentials", ".netrc"]
+action = "Relay"
+relay_targets = ["CredentialPatterns"]
+description = "Git and network credential files"
+
+[[rules]]
+name = "AnsibleFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['(?i)(playbook|inventory|vault|ansible).*\.(ya?ml|cfg)$']
+action = "Relay"
+relay_targets = ["CredentialPatterns"]
+description = "Ansible configuration and playbook files -- may contain vault passwords"
+
+[[rules]]
+name = "TerraformStateFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['\.tfstate(\.backup)?$', '\.tfvars$']
+action = "Relay"
+relay_targets = ["CredentialPatterns", "CloudKeyPatterns"]
+description = "Terraform state and variable files -- often contain cloud credentials"
+
+[[rules]]
+name = "BackupFileExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["bak", "old", "orig", "save", "swp", "sav"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "ConnectionStrings"]
+description = "Backup and swap files -- may be copies of config files with credentials"
+
+[[rules]]
+name = "HistoryFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [
+    ".bash_history", ".zsh_history", ".sh_history",
+    ".mysql_history", ".psql_history",
+    ".python_history", ".node_repl_history",
+    ".lesshst", ".viminfo",
+]
+action = "Snaffle"
+triage = "Red"
+description = "Shell and application command history -- may contain typed credentials"

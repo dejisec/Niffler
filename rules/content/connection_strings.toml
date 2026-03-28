@@ -1,0 +1,21 @@
+[[rules]]
+name = "ConnectionStrings"
+scope = "ContentsEnumeration"
+match_location = "FileContentAsString"
+match_type = "Regex"
+patterns = [
+    "(?i)mysql://[^\\s\"']{10,}",
+    "(?i)postgres(ql)?://[^\\s\"']{10,}",
+    "(?i)mongodb(\\+srv)?://[^\\s\"']{10,}",
+    "(?i)redis://[^\\s\"']{10,}",
+    "(?i)amqp://[^\\s\"']{10,}",
+    "(?i)mssql://[^\\s\"']{10,}",
+    "(?i)ldap(s)?://[^\\s\"']{10,}",
+    '(?i)DSN\s*=\s*[^\s;]{4,}',
+    '(?i)Data\s+Source\s*=\s*[^\s;]{4,}',
+]
+action = "Snaffle"
+triage = "Red"
+max_size = 1048576
+context_bytes = 200
+description = "Database and service connection strings with embedded credentials"

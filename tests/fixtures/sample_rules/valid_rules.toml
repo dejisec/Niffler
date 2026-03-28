@@ -1,0 +1,71 @@
+# Valid rules covering all 4 scopes, all 4 actions, and all 4 triage levels.
+# Used by rules integration tests to verify loading and validation.
+
+[[rules]]
+name = "TestShareFlag"
+scope = "ShareEnumeration"
+match_location = "ExportPath"
+match_type = "Exact"
+patterns = ["/home", "/export"]
+action = "Snaffle"
+triage = "Green"
+description = "Flag interesting NFS exports"
+
+[[rules]]
+name = "TestDiscardBoring"
+scope = "DirectoryEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = ["node_modules", ".cache", "__pycache__"]
+action = "Discard"
+description = "Prune uninteresting directories"
+
+[[rules]]
+name = "TestCriticalFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = ["shadow", "master.passwd"]
+action = "Snaffle"
+triage = "Black"
+description = "Critical credential files"
+
+[[rules]]
+name = "TestConfigRelay"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["conf", "cfg"]
+action = "Relay"
+relay_targets = ["TestContentRule"]
+description = "Relay config files to content scan"
+
+[[rules]]
+name = "TestContentRule"
+scope = "ContentsEnumeration"
+match_location = "FileContentAsString"
+match_type = "Regex"
+patterns = ["(?i)password\\s*[=:]\\s*[^\\s]{4,}"]
+action = "Snaffle"
+triage = "Red"
+context_bytes = 100
+description = "Detect passwords in file content"
+
+[[rules]]
+name = "TestKeyFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ["(?i)\\.pem$", "(?i)\\.key$"]
+action = "CheckForKeys"
+description = "Check PEM/key files for key material"
+
+[[rules]]
+name = "TestLogFiles"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["log"]
+action = "Snaffle"
+triage = "Yellow"
+description = "Log files may contain sensitive data"

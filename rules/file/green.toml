@@ -1,0 +1,59 @@
+[[rules]]
+name = "ReadmeFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['(?i)^readme']
+action = "Snaffle"
+triage = "Green"
+description = "README files -- provide context about directory contents"
+
+[[rules]]
+name = "TodoFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['(?i)^(todo|notes|fixme)']
+action = "Snaffle"
+triage = "Green"
+description = "TODO and notes files -- may reference security-relevant items"
+
+[[rules]]
+name = "ChangelogFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['(?i)^(changelog|changes|history)']
+action = "Snaffle"
+triage = "Green"
+description = "Changelog files -- may reveal application versions and vulnerabilities"
+
+[[rules]]
+name = "LicenseFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['(?i)^license']
+action = "Snaffle"
+triage = "Green"
+description = "License files -- identify software in use"
+
+[[rules]]
+name = "MakefileFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = ["Makefile", "Rakefile", "Vagrantfile", "Jenkinsfile", "Procfile"]
+action = "Snaffle"
+triage = "Green"
+description = "Build and orchestration files -- reveal infrastructure details"
+
+[[rules]]
+name = "RootOwnedFiles"
+scope = "FileEnumeration"
+match_location = "FileOwnerUid"
+match_type = "Exact"
+patterns = ["0"]
+action = "Snaffle"
+triage = "Green"
+description = "Root-owned files on NFS share -- informational for privilege assessment"

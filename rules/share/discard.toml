@@ -1,0 +1,23 @@
+[[rules]]
+name = "DiscardBoringExports"
+scope = "ShareEnumeration"
+match_location = "ExportPath"
+match_type = "Exact"
+patterns = [
+    "/usr/share", "/var/cache", "/proc", "/sys",
+    "/dev", "/run", "/snap", "/var/log", "/tmp", "/var/tmp",
+]
+action = "Discard"
+description = "Skip exports of system directories with no credential value"
+
+[[rules]]
+name = "DiscardSnapshotExports"
+scope = "ShareEnumeration"
+match_location = "ExportPath"
+match_type = "Contains"
+patterns = [
+    "/.snapshot/",
+    "/.snapshot",
+]
+action = "Discard"
+description = "Skip NFS snapshot exports (Isilon/NetApp DELL-* snapshots)"

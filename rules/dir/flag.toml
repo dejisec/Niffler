@@ -1,0 +1,49 @@
+[[rules]]
+name = "InterestingSshDir"
+scope = "DirectoryEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [".ssh"]
+action = "Snaffle"
+triage = "Red"
+description = "SSH configuration directory -- likely contains private keys"
+
+[[rules]]
+name = "InterestingAwsDir"
+scope = "DirectoryEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [".aws"]
+action = "Snaffle"
+triage = "Red"
+description = "AWS credential directory"
+
+[[rules]]
+name = "InterestingKubeDir"
+scope = "DirectoryEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [".kube"]
+action = "Snaffle"
+triage = "Red"
+description = "Kubernetes configuration directory"
+
+[[rules]]
+name = "InterestingGnupgDir"
+scope = "DirectoryEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [".gnupg"]
+action = "Snaffle"
+triage = "Red"
+description = "GnuPG keyring directory"
+
+[[rules]]
+name = "InterestingConfigDir"
+scope = "DirectoryEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [".config"]
+action = "Snaffle"
+triage = "Yellow"
+description = "User configuration directory -- may contain application secrets"

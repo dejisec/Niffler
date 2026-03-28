@@ -1,0 +1,22 @@
+# Circular relay: RuleA -> RuleB -> RuleA
+# Must parse as valid TOML but fail detect_relay_cycles().
+
+[[rules]]
+name = "RuleA"
+scope = "ContentsEnumeration"
+match_location = "FileContentAsString"
+match_type = "Regex"
+patterns = ["secret"]
+action = "Relay"
+relay_targets = ["RuleB"]
+description = "First rule in circular relay"
+
+[[rules]]
+name = "RuleB"
+scope = "ContentsEnumeration"
+match_location = "FileContentAsString"
+match_type = "Regex"
+patterns = ["password"]
+action = "Relay"
+relay_targets = ["RuleA"]
+description = "Second rule in circular relay -- creates cycle back to RuleA"

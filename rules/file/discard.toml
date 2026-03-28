@@ -1,0 +1,24 @@
+[[rules]]
+name = "DiscardMediaExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = [
+    "jpg", "jpeg", "png", "gif", "bmp", "svg", "ico", "webp", "tiff",
+    "mp4", "mp3", "avi", "mkv", "mov", "flv", "wmv", "wav", "flac", "ogg", "webm",
+    "woff", "woff2", "ttf", "eot", "otf",
+]
+action = "Discard"
+description = "Skip media files -- images, audio, video, fonts have no credential value"
+
+[[rules]]
+name = "DiscardBinaryExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = [
+    "so", "o", "a", "pyc", "pyo", "class", "jar", "war",
+    "deb", "rpm", "snap", "zwc", "elc",
+]
+action = "Discard"
+description = "Skip compiled binaries and packages -- no plaintext credentials"

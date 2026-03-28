@@ -1,0 +1,33 @@
+# 3-hop relay chain: ChainEntry -> ChainMiddle -> ChainTerminal
+# Used by rules integration tests to verify relay chain resolution.
+
+[[rules]]
+name = "ChainEntry"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ["(?i)\\.env$"]
+action = "Relay"
+relay_targets = ["ChainMiddle"]
+description = "Entry point: match .env files and relay to content check"
+
+[[rules]]
+name = "ChainMiddle"
+scope = "ContentsEnumeration"
+match_location = "FileContentAsString"
+match_type = "Regex"
+patterns = ["(?i)(password|secret)"]
+action = "Relay"
+relay_targets = ["ChainTerminal"]
+description = "Middle hop: match password/secret keywords and relay deeper"
+
+[[rules]]
+name = "ChainTerminal"
+scope = "ContentsEnumeration"
+match_location = "FileContentAsString"
+match_type = "Regex"
+patterns = ["(?i)(password|passwd|pwd)\\s*[=:]\\s*[^\\s]{4,}"]
+action = "Snaffle"
+triage = "Red"
+context_bytes = 100
+description = "Terminal: capture credential patterns as Red finding"

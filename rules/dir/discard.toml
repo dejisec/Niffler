@@ -1,0 +1,25 @@
+[[rules]]
+name = "DiscardBoringDirs"
+scope = "DirectoryEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [
+    "node_modules", "__pycache__", ".cache", "vendor", "site-packages",
+    ".git", ".svn", ".hg", ".tox", ".mypy_cache", ".pytest_cache",
+    "dist", "build", ".eggs", "__MACOSX", ".snapshot",
+]
+action = "Discard"
+description = "Prune directories that contain dependency or build artifacts"
+
+[[rules]]
+name = "DiscardVirtualFsDirs"
+scope = "DirectoryEnumeration"
+match_location = "FilePath"
+match_type = "StartsWith"
+patterns = [
+    "/proc", "/sys", "/dev", "/run", "/snap",
+    "/usr/share/doc", "/usr/share/man",
+    "/usr/lib/python", "/usr/lib/firmware",
+]
+action = "Discard"
+description = "Prune virtual filesystem and system documentation paths"

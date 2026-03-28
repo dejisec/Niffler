@@ -1,0 +1,69 @@
+[[rules]]
+name = "WorldWritableFiles"
+scope = "FileEnumeration"
+match_location = "FileMode"
+match_type = "Regex"
+patterns = ['[0-7][0-7][2367]$']
+action = "Snaffle"
+triage = "Yellow"
+description = "World-writable files -- potential security misconfiguration"
+
+[[rules]]
+name = "SuidBinaries"
+scope = "FileEnumeration"
+match_location = "FileMode"
+match_type = "Regex"
+patterns = ['^[46]']
+action = "Snaffle"
+triage = "Yellow"
+description = "SUID binaries -- potential privilege escalation vector"
+
+[[rules]]
+name = "SgidBinaries"
+scope = "FileEnumeration"
+match_location = "FileMode"
+match_type = "Regex"
+patterns = ['^[26]']
+action = "Snaffle"
+triage = "Yellow"
+description = "SGID binaries -- potential privilege escalation vector"
+
+[[rules]]
+name = "LogFileExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["log"]
+action = "Snaffle"
+triage = "Yellow"
+description = "Log files -- may contain leaked credentials or sensitive data"
+
+[[rules]]
+name = "TempFileExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["tmp", "temp"]
+action = "Snaffle"
+triage = "Yellow"
+description = "Temporary files -- may contain transient secrets"
+
+[[rules]]
+name = "CoreDumpFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['^core(\.\d+)?$']
+action = "Snaffle"
+triage = "Yellow"
+description = "Core dump files -- may contain in-memory credentials"
+
+[[rules]]
+name = "CronFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = ["crontab", "anacrontab"]
+action = "Relay"
+relay_targets = ["CredentialPatterns"]
+description = "Cron configuration files -- may contain credentials in scheduled commands"

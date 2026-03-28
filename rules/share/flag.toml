@@ -1,0 +1,12 @@
+[[rules]]
+name = "InterestingExports"
+scope = "ShareEnumeration"
+match_location = "ExportPath"
+match_type = "Exact"
+patterns = [
+    "/home", "/etc", "/root", "/opt", "/var/www",
+    "/srv", "/export", "/exports", "/backup", "/backups",
+]
+action = "Snaffle"
+triage = "Green"
+description = "Flag exports likely to contain user data, configs, or secrets"

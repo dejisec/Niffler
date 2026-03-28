@@ -1,0 +1,20 @@
+[[rules]]
+name = "CloudKeyPatterns"
+scope = "ContentsEnumeration"
+match_location = "FileContentAsString"
+match_type = "Regex"
+patterns = [
+    'AKIA[0-9A-Z]{16}',
+    '(?i)aws_secret_access_key\s*[=:]\s*[A-Za-z0-9/+=]{40}',
+    '(?i)aws_session_token\s*[=:]\s*[A-Za-z0-9/+=]{16,}',
+    "(?i)\"type\"\\s*:\\s*\"service_account\"",
+    '(?i)private_key_id\s*[":]\s*[a-f0-9]{40}',
+    "(?i)azure[_.]?(tenant|client|subscription)[_.]?id\\s*[=:]\\s*[\"']?[0-9a-f-]{36}",
+    "(?i)client_secret\\s*[=:]\\s*[\"']?[A-Za-z0-9\\-._~]{16,}",
+    '(?i)sk_live_[A-Za-z0-9]{24,}',
+]
+action = "Snaffle"
+triage = "Red"
+max_size = 1048576
+context_bytes = 200
+description = "Cloud provider credentials -- AWS keys, GCP service accounts, Azure tokens"

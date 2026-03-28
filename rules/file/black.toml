@@ -1,0 +1,105 @@
+[[rules]]
+name = "SshPrivateKeys"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = ["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"]
+action = "Snaffle"
+triage = "Black"
+description = "SSH private key files"
+
+[[rules]]
+name = "KeePassDatabases"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["kdbx", "kdb"]
+action = "Snaffle"
+triage = "Black"
+description = "KeePass password database files"
+
+[[rules]]
+name = "ShadowFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = ["shadow", "shadow-", "gshadow", "gshadow-", "master.passwd"]
+action = "Snaffle"
+triage = "Black"
+description = "Unix password shadow files containing hashed credentials"
+
+[[rules]]
+name = "VaultTokenFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [".vault-token"]
+action = "Snaffle"
+triage = "Black"
+description = "HashiCorp Vault authentication tokens"
+
+[[rules]]
+name = "CloudCredentialPaths"
+scope = "FileEnumeration"
+match_location = "FilePath"
+match_type = "Glob"
+patterns = [
+    "**/.aws/credentials",
+    "**/.aws/config",
+    "**/.gcp/*.json",
+    "**/.azure/accessTokens.json",
+    "**/.azure/azureProfile.json",
+]
+action = "Snaffle"
+triage = "Black"
+description = "Cloud provider credential files at well-known paths"
+
+[[rules]]
+name = "KubernetesConfigs"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = ["kubeconfig", "admin.conf"]
+action = "Snaffle"
+triage = "Black"
+description = "Kubernetes cluster configuration with embedded credentials"
+
+[[rules]]
+name = "DiskImageExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["vmdk", "qcow2", "vdi", "vhd", "vhdx"]
+action = "Snaffle"
+triage = "Black"
+description = "Virtual disk images -- may contain entire filesystems with credentials"
+
+[[rules]]
+name = "DatabaseFileExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["mdf", "ldf", "sqlite", "sqlite3", "db"]
+action = "Snaffle"
+triage = "Black"
+description = "Database files that may contain stored credentials or sensitive data"
+
+[[rules]]
+name = "LuksKeyFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['(?i)luks.*key', '\.keyfile$']
+action = "Snaffle"
+triage = "Black"
+description = "LUKS disk encryption key files"
+
+[[rules]]
+name = "PgpGpgExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["pgp", "gpg", "asc"]
+action = "Relay"
+relay_targets = ["CryptoPatterns"]
+description = "PGP/GPG files -- relay to content scan for private key detection"

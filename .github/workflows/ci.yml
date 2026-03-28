@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    name: CI (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ubuntu-latest
+          - os: macos
+            runner: macos-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install libnfs (Linux)
+        if: matrix.os == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libnfs-dev pkg-config
+
+      - name: Install libnfs (macOS)
+        if: matrix.os == 'macos'
+        run: brew install libnfs
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        if: matrix.os == 'linux'
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Run tests
+        run: cargo test

@@ -1,0 +1,27 @@
+# Application configuration
+app:
+  name: niffler-test
+  version: "1.0.0"
+
+# Database settings
+database:
+  host: db.internal.example.com
+  port: 5432
+  username: admin
+  password: "P@ssw0rd_123"
+  connection_string: "postgres://admin:P@ssw0rd_123@db.internal.example.com:5432/appdb"
+
+# AWS credentials
+aws:
+  region: us-east-1
+  aws_access_key_id: "AKIAIOSFODNN7EXAMPLE"
+  aws_secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+# Redis cache
+cache:
+  url: "redis://cache.internal:6379/0"
+
+# Logging
+logging:
+  level: info
+  file: /var/log/app.log
