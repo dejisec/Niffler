@@ -21,7 +21,7 @@ pub struct Cli {
     #[arg(short = 'i', long, num_args = 1..)]
     pub local_path: Option<Vec<PathBuf>>,
 
-    /// Operating mode: recon (discovery only), enum (no content scan), scan (full)
+    /// Operating mode
     #[arg(short = 'm', long, default_value = "scan")]
     pub mode: OperatingMode,
 
@@ -37,7 +37,7 @@ pub struct Cli {
     #[arg(short = 'b', long, default_value = "green")]
     pub min_severity: Triage,
 
-    /// Output format: console, json, tsv
+    /// Output format
     #[arg(short = 'f', long, default_value = "console")]
     pub format: OutputFormat,
 
@@ -45,16 +45,16 @@ pub struct Cli {
     #[arg(short = 'o', long)]
     pub output: Option<PathBuf>,
 
-    /// UID for NFS AUTH_SYS credentials (nobody=65534 avoids root_squash)
+    /// UID for NFS AUTH_SYS credentials
     #[arg(long, default_value = "65534")]
     pub uid: u32,
 
-    /// GID for NFS AUTH_SYS credentials (nobody=65534 avoids root_squash)
+    /// GID for NFS AUTH_SYS credentials
     #[arg(long, default_value = "65534")]
     pub gid: u32,
 
     /// Auto-cycle through discovered UIDs on permission denied
-    #[arg(long, default_value = "true")]
+    #[arg(long, default_value_t = true)]
     pub uid_cycle: bool,
 
     /// Max UID attempts per file before giving up
@@ -113,7 +113,7 @@ pub struct Cli {
     #[arg(short = 'c', long)]
     pub config: Option<PathBuf>,
 
-    /// Verbosity: trace, debug, info, warn, error
+    /// Log verbosity level
     #[arg(short = 'v', long, default_value = "info")]
     pub verbosity: Verbosity,
 }
@@ -158,11 +158,11 @@ mod tests {
         let cli = parse(&["niffler", "-t", "10.0.0.1"]);
         assert_eq!(
             cli.uid, 65534,
-            "default UID should be nobody to avoid root_squash"
+            "default UID should be nobody (65534) for predictable baseline access"
         );
         assert_eq!(
             cli.gid, 65534,
-            "default GID should be nobody to avoid root_squash"
+            "default GID should be nobody (65534) to match default UID"
         );
         assert_eq!(cli.max_depth, 50);
         assert_eq!(cli.max_scan_size, 1_048_576);
