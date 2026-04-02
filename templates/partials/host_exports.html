@@ -1,0 +1,18 @@
+{% if exports.is_empty() %}
+<div class="empty-state">No exports found</div>
+{% else %}
+{% for e in exports %}
+<div class="export-item">
+    <span class="export-path">{{ e.export_path }}</span>
+    <span class="export-bar" style="width: {{ e.bar_pct }}%"></span>
+    <span class="export-count">{{ e.count }} findings</span>
+</div>
+{% for f in e.findings %}
+<div class="export-item" style="padding-left: 2rem;">
+    <span class="badge badge-{{ f.triage|lower }}">{{ f.triage }}</span>
+    <span class="export-path">{{ f.file_path }}</span>
+    <span class="export-count">{{ f.rule_name }}</span>
+</div>
+{% endfor %}
+{% endfor %}
+{% endif %}

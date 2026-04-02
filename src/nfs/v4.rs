@@ -769,49 +769,49 @@ mod tests {
 
     #[test]
     fn map_eacces() {
-        let err = map_libnfs_error(-(libc::EACCES as i32), "Permission denied");
+        let err = map_libnfs_error(-libc::EACCES, "Permission denied");
         assert!(matches!(err, NfsError::PermissionDenied));
     }
 
     #[test]
     fn map_eperm() {
-        let err = map_libnfs_error(-(libc::EPERM as i32), "Operation not permitted");
+        let err = map_libnfs_error(-libc::EPERM, "Operation not permitted");
         assert!(matches!(err, NfsError::PermissionDenied));
     }
 
     #[test]
     fn map_estale() {
-        let err = map_libnfs_error(-(libc::ESTALE as i32), "Stale file handle");
+        let err = map_libnfs_error(-libc::ESTALE, "Stale file handle");
         assert!(matches!(err, NfsError::StaleHandle));
     }
 
     #[test]
     fn map_enoent() {
-        let err = map_libnfs_error(-(libc::ENOENT as i32), "No such file");
+        let err = map_libnfs_error(-libc::ENOENT, "No such file");
         assert!(matches!(err, NfsError::NotFound));
     }
 
     #[test]
     fn map_eio() {
-        let err = map_libnfs_error(-(libc::EIO as i32), "I/O error");
+        let err = map_libnfs_error(-libc::EIO, "I/O error");
         assert!(matches!(err, NfsError::Transient(_)));
     }
 
     #[test]
     fn map_etimedout() {
-        let err = map_libnfs_error(-(libc::ETIMEDOUT as i32), "Connection timed out");
+        let err = map_libnfs_error(-libc::ETIMEDOUT, "Connection timed out");
         assert!(matches!(err, NfsError::Transient(_)));
     }
 
     #[test]
     fn map_econnrefused() {
-        let err = map_libnfs_error(-(libc::ECONNREFUSED as i32), "Connection refused");
+        let err = map_libnfs_error(-libc::ECONNREFUSED, "Connection refused");
         assert!(matches!(err, NfsError::ConnectionLost));
     }
 
     #[test]
     fn map_econnreset() {
-        let err = map_libnfs_error(-(libc::ECONNRESET as i32), "Connection reset");
+        let err = map_libnfs_error(-libc::ECONNRESET, "Connection reset");
         assert!(matches!(err, NfsError::ConnectionLost));
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "niffler"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "NFS share secret finder"
 license = "MIT"
@@ -43,6 +43,13 @@ bytesize = "2"
 dashmap = "6"
 libc = "0.2"
 tokio-socks = "0.5"
+axum = "0.8"
+askama = "0.15"
+askama_web = { version = "0.15", features = ["axum-0.8"] }
+rusqlite = { version = "0.37", features = ["bundled-full"] }
+tokio-rusqlite = { version = "0.7", features = ["bundled-full"] }
+tower-http = { version = "0.6", features = ["compression-gzip"] }
+rust-embed = "8"
 mockall = { version = "0.14", optional = true }
 
 [build-dependencies]
@@ -53,6 +60,7 @@ tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
 tokio-test = "0.4"
+tower = { version = "0.5", features = ["util"] }
 niffler = { path = ".", features = ["testing"] }
 
 [profile.release]

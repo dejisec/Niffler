@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 
@@ -9,22 +11,25 @@ fn cli_help_succeeds() {
         .assert()
         .success()
         .stdout(predicate::str::contains("NFS"))
-        .stdout(predicate::str::contains("--targets"));
+        .stdout(predicate::str::contains("scan"))
+        .stdout(predicate::str::contains("serve"))
+        .stdout(predicate::str::contains("export"));
 }
 
 #[test]
-fn cli_help_contains_all_flag_groups() {
+fn scan_help_contains_all_flag_groups() {
     let assert = Command::cargo_bin("niffler")
         .unwrap()
-        .arg("--help")
+        .args(["scan", "--help"])
         .assert()
         .success();
 
     let flags = [
+        "--targets",
         "--mode",
         "--uid",
         "--gid",
-        "--format",
+        "--live",
         "--output",
         "--rules-dir",
         "--max-scan-size",
@@ -35,7 +40,6 @@ fn cli_help_contains_all_flag_groups() {
         "--privileged-port",
         "--generate-config",
         "--config",
-        "--verbosity",
         "--min-severity",
     ];
 
@@ -46,14 +50,14 @@ fn cli_help_contains_all_flag_groups() {
 }
 
 #[test]
-fn cli_help_shows_default_values() {
+fn scan_help_shows_default_values() {
     Command::cargo_bin("niffler")
         .unwrap()
-        .arg("--help")
+        .args(["scan", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("scan"))
-        .stdout(predicate::str::contains("console"))
+        .stdout(predicate::str::contains("niffler.db"))
         .stdout(predicate::str::contains("50"))
         .stdout(predicate::str::contains("1048576"));
 }
@@ -62,11 +66,11 @@ fn cli_help_shows_default_values() {
 fn cli_generate_config_outputs_valid_toml() {
     let output = Command::cargo_bin("niffler")
         .unwrap()
-        .arg("-z")
+        .args(["scan", "-z"])
         .output()
-        .expect("failed to run niffler -z");
+        .expect("failed to run niffler scan -z");
 
-    assert!(output.status.success(), "niffler -z should exit 0");
+    assert!(output.status.success(), "niffler scan -z should exit 0");
 
     let stdout = String::from_utf8(output.stdout).expect("stdout is valid UTF-8");
     let value: toml::Value = toml::from_str(&stdout).expect("stdout should be valid TOML");
@@ -77,7 +81,7 @@ fn cli_generate_config_outputs_valid_toml() {
 fn cli_generate_config_contains_sections() {
     Command::cargo_bin("niffler")
         .unwrap()
-        .arg("-z")
+        .args(["scan", "-z"])
         .assert()
         .success()
         .stdout(predicate::str::contains("[discovery]"))
@@ -90,23 +94,149 @@ fn cli_generate_config_contains_sections() {
 fn cli_generate_config_contains_key_fields() {
     Command::cargo_bin("niffler")
         .unwrap()
-        .arg("-z")
+        .args(["scan", "-z"])
         .assert()
         .success()
         .stdout(predicate::str::contains("mode"))
         .stdout(predicate::str::contains("max_depth"))
         .stdout(predicate::str::contains("max_scan_size"))
         .stdout(predicate::str::contains("uid"))
-        .stdout(predicate::str::contains("format"));
+        .stdout(predicate::str::contains("db_path"));
 }
 
 #[test]
-fn cli_no_targets_fails() {
+fn cli_no_subcommand_fails() {
+    Command::cargo_bin("niffler").unwrap().assert().failure();
+}
+
+#[test]
+fn scan_no_targets_fails() {
     Command::cargo_bin("niffler")
         .unwrap()
+        .arg("scan")
         .assert()
         .failure()
         .stderr(predicate::str::contains("no targets"));
+}
+
+// ── Subcommand integration tests ────────────────────────────
+
+#[test]
+fn serve_help_shows_options() {
+    Command::cargo_bin("niffler")
+        .unwrap()
+        .args(["serve", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--db"))
+        .stdout(predicate::str::contains("--port"))
+        .stdout(predicate::str::contains("--bind"));
+}
+
+#[test]
+fn export_help_shows_options() {
+    Command::cargo_bin("niffler")
+        .unwrap()
+        .args(["export", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--db"))
+        .stdout(predicate::str::contains("--format"))
+        .stdout(predicate::str::contains("--min-severity"))
+        .stdout(predicate::str::contains("--host"))
+        .stdout(predicate::str::contains("--rule"))
+        .stdout(predicate::str::contains("--scan-id"));
+}
+
+#[test]
+fn serve_without_db_fails() {
+    Command::cargo_bin("niffler")
+        .unwrap()
+        .arg("serve")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn export_without_db_fails() {
+    Command::cargo_bin("niffler")
+        .unwrap()
+        .args(["export", "-f", "json"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn export_without_format_fails() {
+    Command::cargo_bin("niffler")
+        .unwrap()
+        .args(["export", "--db", "scan.db"])
+        .assert()
+        .failure();
+}
+
+// ── Main.rs integration tests ────────────────────────────────
+
+#[test]
+fn scan_subcommand_with_generate_config() {
+    Command::cargo_bin("niffler")
+        .unwrap()
+        .args(["scan", "-t", "10.0.0.1", "-z"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("10.0.0.1"));
+}
+
+#[test]
+fn scan_creates_default_db() {
+    let work_dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+
+    std::fs::write(
+        data_dir.path().join("test.env"),
+        "DB_PASSWORD=MyS3cur3P@ss\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("niffler")
+        .unwrap()
+        .current_dir(work_dir.path())
+        .args(["scan", "-i", data_dir.path().to_str().unwrap()])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success();
+
+    assert!(
+        work_dir.path().join("niffler.db").exists(),
+        "scan should create niffler.db in the working directory"
+    );
+}
+
+#[test]
+fn scan_live_flag() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+
+    std::fs::write(
+        data_dir.path().join("test.env"),
+        "DB_PASSWORD=MyS3cur3P@ss\nAPI_KEY=sk1234567890abcdef1234567890abcdef\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("niffler")
+        .unwrap()
+        .args([
+            "scan",
+            "-i",
+            data_dir.path().to_str().unwrap(),
+            "--live",
+            "-o",
+            db_file.path().to_str().unwrap(),
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty().not());
 }
 
 #[test]
@@ -117,4 +247,13 @@ fn cli_version_or_about() {
         .assert()
         .success()
         .stdout(predicate::str::contains("niffler"));
+}
+
+#[test]
+fn global_verbosity_before_subcommand() {
+    Command::cargo_bin("niffler")
+        .unwrap()
+        .args(["-v", "debug", "scan", "-z"])
+        .assert()
+        .success();
 }

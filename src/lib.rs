@@ -6,3 +6,4 @@ pub mod output;
 pub mod pipeline;
 pub mod scanner;
 pub mod walker;
+pub mod web;

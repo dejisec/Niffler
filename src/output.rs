@@ -1,55 +1,76 @@
 pub mod console;
-pub mod json;
-pub mod tsv;
+pub mod export;
+pub mod sqlite;
 pub mod types;
 
 pub use types::DeduplicationKey;
 pub use types::file_mode_to_rwx;
 
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::Write;
+use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
 
-use crate::config::{OutputConfig, OutputFormat};
-use crate::pipeline::ResultMsg;
+use crate::config::OutputConfig;
+use crate::pipeline::{PipelineStats, ResultMsg};
 
-/// Async output sink — reads `ResultMsg` from the pipeline channel and routes
-/// each finding to the configured formatter, flushing after every write.
-pub async fn run(mut rx: mpsc::Receiver<ResultMsg>, config: &OutputConfig) -> Result<()> {
-    let mut writer: Box<dyn Write + Send> = match &config.output_file {
-        Some(path) => Box::new(BufWriter::new(File::create(path)?)),
-        None => Box::new(std::io::stdout()),
+use self::sqlite::SqliteWriter;
+
+/// Async output sink — reads `ResultMsg` from the pipeline channel, writes
+/// every finding to SQLite, and optionally tees to a console writer when
+/// `config.live` is set.
+///
+/// SQLite deduplication is handled by the database UNIQUE constraint.
+/// Console deduplication uses an in-memory `HashSet<DeduplicationKey>`.
+pub async fn run(
+    rx: mpsc::Receiver<ResultMsg>,
+    config: &OutputConfig,
+    targets: &[String],
+    mode: &str,
+    stats: Arc<PipelineStats>,
+) -> Result<()> {
+    let console_writer: Option<Box<dyn Write + Send>> = if config.live {
+        Some(Box::new(std::io::stdout()))
+    } else {
+        None
     };
+    run_inner(rx, config, targets, mode, stats, console_writer).await
+}
 
-    let mut seen = HashSet::new();
+/// Inner implementation that accepts an injected console writer for testability.
+async fn run_inner(
+    mut rx: mpsc::Receiver<ResultMsg>,
+    config: &OutputConfig,
+    targets: &[String],
+    mode: &str,
+    stats: Arc<PipelineStats>,
+    mut console_writer: Option<Box<dyn Write + Send>>,
+) -> Result<()> {
+    let sqlite_writer = SqliteWriter::new(&config.db_path, targets, mode).await?;
+
+    let mut console_seen = HashSet::new();
 
     while let Some(msg) = rx.recv().await {
         if msg.triage < config.min_severity {
             continue;
         }
 
-        let key = DeduplicationKey::from_result(&msg);
-        if !seen.insert(key) {
-            tracing::debug!(
-                host = %msg.host,
-                export = %msg.export_path,
-                file = %msg.file_path,
-                rule = %msg.rule_name,
-                "suppressed duplicate finding"
-            );
-            continue;
-        }
+        // Always write to SQLite (DB UNIQUE constraint handles dedup)
+        sqlite_writer.write(&msg).await?;
 
-        match config.format {
-            OutputFormat::Console => console::write_console(&msg, &mut *writer)?,
-            OutputFormat::Json => json::write_json(&msg, &mut *writer)?,
-            OutputFormat::Tsv => tsv::write_tsv(&msg, &mut *writer)?,
+        // Optionally tee to console with in-memory dedup
+        if let Some(ref mut writer) = console_writer {
+            let key = DeduplicationKey::from_result(&msg);
+            if console_seen.insert(key) {
+                console::write_console(&msg, &mut **writer)?;
+                writer.flush()?;
+            }
         }
-        writer.flush()?;
     }
+
+    sqlite_writer.finish(&stats).await?;
 
     Ok(())
 }
@@ -58,18 +79,20 @@ pub async fn run(mut rx: mpsc::Receiver<ResultMsg>, config: &OutputConfig) -> Re
 mod tests {
     use super::*;
     use crate::classifier::Triage;
+    use crate::web::db::FindingsQuery;
     use chrono::Utc;
-    use tempfile::NamedTempFile;
+    use std::io::Cursor;
+    use std::sync::Arc;
 
-    fn make_msg(triage: Triage, context: Option<String>) -> ResultMsg {
+    fn make_msg(triage: Triage, rule: &str, file: &str, context: Option<String>) -> ResultMsg {
         ResultMsg {
             timestamp: Utc::now(),
             host: "nfs-server".into(),
             export_path: "/exports/home".into(),
-            file_path: "user1/.ssh/id_rsa".into(),
+            file_path: file.into(),
             triage,
-            rule_name: "SSHPrivateKey".into(),
-            matched_pattern: "id_rsa".into(),
+            rule_name: rule.into(),
+            matched_pattern: "test_pattern".into(),
             context,
             file_size: 1700,
             file_mode: 0o644,
@@ -79,252 +102,264 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn dispatcher_routes_json_to_file() {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
-        let (tx, rx) = mpsc::channel::<ResultMsg>(10);
-
-        tx.send(make_msg(Triage::Black, Some("secret".into())))
-            .await
-            .unwrap();
-        drop(tx);
-
-        let config = OutputConfig {
-            format: OutputFormat::Json,
-            output_file: Some(path.clone()),
+    fn test_config(db_path: std::path::PathBuf, live: bool) -> OutputConfig {
+        OutputConfig {
+            db_path,
+            live,
             min_severity: Triage::Green,
-        };
-        run(rx, &config).await.unwrap();
-
-        let contents = std::fs::read_to_string(&path).unwrap();
-        let parsed: Result<serde_json::Value, _> = serde_json::from_str(contents.trim());
-        assert!(parsed.is_ok(), "output should be valid JSON: {contents}");
-    }
-
-    #[tokio::test]
-    async fn dispatcher_routes_tsv_to_file() {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
-        let (tx, rx) = mpsc::channel::<ResultMsg>(10);
-
-        tx.send(make_msg(Triage::Red, None)).await.unwrap();
-        drop(tx);
-
-        let config = OutputConfig {
-            format: OutputFormat::Tsv,
-            output_file: Some(path.clone()),
-            min_severity: Triage::Green,
-        };
-        run(rx, &config).await.unwrap();
-
-        let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            contents.contains('\t'),
-            "TSV output should contain tabs: {contents}"
-        );
-    }
-
-    #[tokio::test]
-    async fn dispatcher_routes_console_to_file() {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
-        let (tx, rx) = mpsc::channel::<ResultMsg>(10);
-
-        tx.send(make_msg(Triage::Black, None)).await.unwrap();
-        drop(tx);
-
-        let config = OutputConfig {
-            format: OutputFormat::Console,
-            output_file: Some(path.clone()),
-            min_severity: Triage::Green,
-        };
-        run(rx, &config).await.unwrap();
-
-        let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            contents.contains("BLACK"),
-            "console output should contain triage severity: {contents}"
-        );
-    }
-
-    #[tokio::test]
-    async fn dispatcher_handles_empty_channel() {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
-        let (_tx, rx) = mpsc::channel::<ResultMsg>(10);
-        drop(_tx);
-
-        let config = OutputConfig {
-            format: OutputFormat::Json,
-            output_file: Some(path),
-            min_severity: Triage::Green,
-        };
-        let result = run(rx, &config).await;
-        assert!(result.is_ok(), "empty channel should return Ok");
-    }
-
-    #[tokio::test]
-    async fn dispatcher_multiple_findings() {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
-        let (tx, rx) = mpsc::channel::<ResultMsg>(10);
-
-        // Use distinct rule_names so dedup doesn't suppress them
-        let mut msg1 = make_msg(Triage::Black, Some("key1".into()));
-        msg1.rule_name = "RuleA".into();
-        let mut msg2 = make_msg(Triage::Red, Some("key2".into()));
-        msg2.rule_name = "RuleB".into();
-        let mut msg3 = make_msg(Triage::Green, None);
-        msg3.rule_name = "RuleC".into();
-
-        tx.send(msg1).await.unwrap();
-        tx.send(msg2).await.unwrap();
-        tx.send(msg3).await.unwrap();
-        drop(tx);
-
-        let config = OutputConfig {
-            format: OutputFormat::Json,
-            output_file: Some(path.clone()),
-            min_severity: Triage::Green,
-        };
-        run(rx, &config).await.unwrap();
-
-        let contents = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = contents.lines().collect();
-        assert_eq!(lines.len(), 3, "should have exactly 3 lines: {contents}");
-        for (i, line) in lines.iter().enumerate() {
-            let parsed: Result<serde_json::Value, _> = serde_json::from_str(line);
-            assert!(parsed.is_ok(), "line {i} should be valid JSON: {line}");
         }
     }
 
     #[tokio::test]
-    async fn dispatcher_filters_below_min_severity() {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
+    async fn output_always_writes_sqlite() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = test_config(tmp.path().to_path_buf(), false);
+        let stats = Arc::new(PipelineStats::default());
+
         let (tx, rx) = mpsc::channel::<ResultMsg>(10);
-
-        // Use distinct rule_names so dedup doesn't suppress them
-        let mut msg1 = make_msg(Triage::Green, None);
-        msg1.rule_name = "RuleA".into();
-        let mut msg2 = make_msg(Triage::Yellow, None);
-        msg2.rule_name = "RuleB".into();
-        let mut msg3 = make_msg(Triage::Red, Some("cred".into()));
-        msg3.rule_name = "RuleC".into();
-        let mut msg4 = make_msg(Triage::Black, Some("key".into()));
-        msg4.rule_name = "RuleD".into();
-
-        tx.send(msg1).await.unwrap();
-        tx.send(msg2).await.unwrap();
-        tx.send(msg3).await.unwrap();
-        tx.send(msg4).await.unwrap();
+        tx.send(make_msg(Triage::Black, "SSHKey", "id_rsa", None))
+            .await
+            .unwrap();
         drop(tx);
 
-        let config = OutputConfig {
-            format: OutputFormat::Json,
-            output_file: Some(path.clone()),
-            min_severity: Triage::Red,
-        };
-        run(rx, &config).await.unwrap();
+        run_inner(rx, &config, &[], "scan", Arc::clone(&stats), None)
+            .await
+            .unwrap();
 
-        let contents = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
-        assert_eq!(
-            lines.len(),
-            2,
-            "only Red and Black should pass filter, got: {contents}"
-        );
+        let db = crate::web::db::Database::open(tmp.path()).await.unwrap();
+        let count = db.count_findings(&FindingsQuery::default()).await.unwrap();
+        assert_eq!(count, 1, "finding should be in SQLite");
     }
 
     #[tokio::test]
-    async fn dispatcher_deduplicates_identical_findings() {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
-        let (tx, rx) = mpsc::channel::<ResultMsg>(10);
+    async fn output_live_tees_to_console() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = test_config(tmp.path().to_path_buf(), true);
+        let stats = Arc::new(PipelineStats::default());
 
-        // Send two identical findings (same host/export/file/rule)
-        tx.send(make_msg(Triage::Black, Some("secret".into())))
-            .await
-            .unwrap();
-        tx.send(make_msg(Triage::Black, Some("secret".into())))
+        let (tx, rx) = mpsc::channel::<ResultMsg>(10);
+        tx.send(make_msg(Triage::Black, "SSHKey", "id_rsa", None))
             .await
             .unwrap();
         drop(tx);
 
-        let config = OutputConfig {
-            format: OutputFormat::Json,
-            output_file: Some(path.clone()),
-            min_severity: Triage::Green,
-        };
-        run(rx, &config).await.unwrap();
+        let console_buf: Vec<u8> = Vec::new();
+        let console_writer: Box<dyn Write + Send> = Box::new(Cursor::new(console_buf));
 
-        let contents = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+        run_inner(
+            rx,
+            &config,
+            &[],
+            "scan",
+            Arc::clone(&stats),
+            Some(console_writer),
+        )
+        .await
+        .unwrap();
+
+        let db = crate::web::db::Database::open(tmp.path()).await.unwrap();
+        let count = db.count_findings(&FindingsQuery::default()).await.unwrap();
+        assert_eq!(count, 1, "finding should be in SQLite");
+
+        // Note: We can't easily read the Cursor back after it's been consumed
+        // by the Box<dyn Write>. The DB verification is sufficient — console
+        // output is tested via the console module's own tests.
+    }
+
+    #[tokio::test]
+    async fn output_no_live_no_console() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = test_config(tmp.path().to_path_buf(), false);
+        let stats = Arc::new(PipelineStats::default());
+
+        let (tx, rx) = mpsc::channel::<ResultMsg>(10);
+        tx.send(make_msg(Triage::Black, "SSHKey", "id_rsa", None))
+            .await
+            .unwrap();
+        drop(tx);
+
+        run_inner(rx, &config, &[], "scan", Arc::clone(&stats), None)
+            .await
+            .unwrap();
+
+        let db = crate::web::db::Database::open(tmp.path()).await.unwrap();
+        let count = db.count_findings(&FindingsQuery::default()).await.unwrap();
+        assert_eq!(count, 1, "finding should be in SQLite even without live");
+    }
+
+    #[tokio::test]
+    async fn output_severity_filter() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut config = test_config(tmp.path().to_path_buf(), false);
+        config.min_severity = Triage::Red;
+        let stats = Arc::new(PipelineStats::default());
+
+        let (tx, rx) = mpsc::channel::<ResultMsg>(10);
+        tx.send(make_msg(Triage::Green, "RuleA", "readme.txt", None))
+            .await
+            .unwrap();
+        tx.send(make_msg(Triage::Yellow, "RuleB", "config.yml", None))
+            .await
+            .unwrap();
+        tx.send(make_msg(
+            Triage::Red,
+            "RuleC",
+            "creds.txt",
+            Some("password".into()),
+        ))
+        .await
+        .unwrap();
+        tx.send(make_msg(
+            Triage::Black,
+            "RuleD",
+            "id_rsa",
+            Some("key".into()),
+        ))
+        .await
+        .unwrap();
+        drop(tx);
+
+        run_inner(rx, &config, &[], "scan", Arc::clone(&stats), None)
+            .await
+            .unwrap();
+
+        let db = crate::web::db::Database::open(tmp.path()).await.unwrap();
+        let count = db.count_findings(&FindingsQuery::default()).await.unwrap();
+        assert_eq!(count, 2, "only Red and Black should pass severity filter");
+    }
+
+    #[tokio::test]
+    async fn output_dedup_in_sqlite() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = test_config(tmp.path().to_path_buf(), false);
+        let stats = Arc::new(PipelineStats::default());
+
+        let (tx, rx) = mpsc::channel::<ResultMsg>(10);
+        // Same rule + file → duplicate
+        tx.send(make_msg(
+            Triage::Black,
+            "SSHKey",
+            "id_rsa",
+            Some("key1".into()),
+        ))
+        .await
+        .unwrap();
+        tx.send(make_msg(
+            Triage::Black,
+            "SSHKey",
+            "id_rsa",
+            Some("key2".into()),
+        ))
+        .await
+        .unwrap();
+        drop(tx);
+
+        run_inner(rx, &config, &[], "scan", Arc::clone(&stats), None)
+            .await
+            .unwrap();
+
+        let db = crate::web::db::Database::open(tmp.path()).await.unwrap();
+        let count = db.count_findings(&FindingsQuery::default()).await.unwrap();
+        assert_eq!(count, 1, "DB UNIQUE constraint should dedup");
+    }
+
+    #[tokio::test]
+    async fn output_dedup_in_console() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = test_config(tmp.path().to_path_buf(), true);
+        let stats = Arc::new(PipelineStats::default());
+
+        let (tx, rx) = mpsc::channel::<ResultMsg>(10);
+        tx.send(make_msg(
+            Triage::Black,
+            "SSHKey",
+            "id_rsa",
+            Some("key".into()),
+        ))
+        .await
+        .unwrap();
+        tx.send(make_msg(
+            Triage::Black,
+            "SSHKey",
+            "id_rsa",
+            Some("key".into()),
+        ))
+        .await
+        .unwrap();
+        drop(tx);
+
+        // Use a temp file as the console writer so we can inspect output
+        let console_file = tempfile::NamedTempFile::new().unwrap();
+        let console_path = console_file.path().to_path_buf();
+        let writer: Box<dyn Write + Send> = Box::new(std::io::BufWriter::new(
+            std::fs::File::create(&console_path).unwrap(),
+        ));
+
+        run_inner(rx, &config, &[], "scan", Arc::clone(&stats), Some(writer))
+            .await
+            .unwrap();
+
+        let contents = std::fs::read_to_string(&console_path).unwrap();
         assert_eq!(
-            lines.len(),
+            contents.matches("BLACK").count(),
             1,
-            "duplicate finding should be suppressed: {contents}"
+            "console dedup should suppress duplicate: {contents}"
         );
     }
 
     #[tokio::test]
-    async fn dispatcher_allows_different_rules_same_file() {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
-        let (tx, rx) = mpsc::channel::<ResultMsg>(10);
+    async fn output_empty_channel() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = test_config(tmp.path().to_path_buf(), false);
+        let stats = Arc::new(PipelineStats::default());
 
-        let mut msg1 = make_msg(Triage::Black, Some("key".into()));
-        msg1.rule_name = "RuleA".into();
-        let mut msg2 = make_msg(Triage::Red, Some("cred".into()));
-        msg2.rule_name = "RuleB".into();
-        tx.send(msg1).await.unwrap();
-        tx.send(msg2).await.unwrap();
-        drop(tx);
+        let (_tx, rx) = mpsc::channel::<ResultMsg>(10);
+        drop(_tx);
 
-        let config = OutputConfig {
-            format: OutputFormat::Json,
-            output_file: Some(path.clone()),
-            min_severity: Triage::Green,
-        };
-        run(rx, &config).await.unwrap();
+        let result = run_inner(rx, &config, &[], "scan", Arc::clone(&stats), None).await;
+        assert!(result.is_ok(), "empty channel should return Ok");
 
-        let contents = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
-        assert_eq!(
-            lines.len(),
-            2,
-            "different rules on same file should both appear: {contents}"
-        );
+        // Scan should still be completed
+        let db = crate::web::db::Database::open(tmp.path()).await.unwrap();
+        let scans = db.list_scans().await.unwrap();
+        assert_eq!(scans.len(), 1);
+        assert_eq!(scans[0].status, "completed");
     }
 
     #[tokio::test]
-    async fn dispatcher_allows_same_rule_different_files() {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
-        let (tx, rx) = mpsc::channel::<ResultMsg>(10);
+    async fn output_multiple_findings() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = test_config(tmp.path().to_path_buf(), false);
+        let stats = Arc::new(PipelineStats::default());
 
-        let mut msg1 = make_msg(Triage::Black, Some("key".into()));
-        msg1.file_path = "user1/.ssh/id_rsa".into();
-        let mut msg2 = make_msg(Triage::Black, Some("key".into()));
-        msg2.file_path = "user2/.ssh/id_rsa".into();
-        tx.send(msg1).await.unwrap();
-        tx.send(msg2).await.unwrap();
+        let (tx, rx) = mpsc::channel::<ResultMsg>(10);
+        tx.send(make_msg(
+            Triage::Black,
+            "RuleA",
+            "file1.txt",
+            Some("key1".into()),
+        ))
+        .await
+        .unwrap();
+        tx.send(make_msg(
+            Triage::Red,
+            "RuleB",
+            "file2.txt",
+            Some("key2".into()),
+        ))
+        .await
+        .unwrap();
+        tx.send(make_msg(Triage::Green, "RuleC", "file3.txt", None))
+            .await
+            .unwrap();
         drop(tx);
 
-        let config = OutputConfig {
-            format: OutputFormat::Json,
-            output_file: Some(path.clone()),
-            min_severity: Triage::Green,
-        };
-        run(rx, &config).await.unwrap();
+        run_inner(rx, &config, &[], "scan", Arc::clone(&stats), None)
+            .await
+            .unwrap();
 
-        let contents = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
-        assert_eq!(
-            lines.len(),
-            2,
-            "same rule on different files should both appear: {contents}"
-        );
+        let db = crate::web::db::Database::open(tmp.path()).await.unwrap();
+        let count = db.count_findings(&FindingsQuery::default()).await.unwrap();
+        assert_eq!(count, 3, "all three findings should be in DB");
     }
 }

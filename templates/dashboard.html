@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Niffler{% endblock %}
+{% block content %}
+<h1 class="page-title">Dashboard</h1>
+
+<div class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-number sev-black">{{ count_black }}</div>
+        <div class="stat-label">Black</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-number sev-red">{{ count_red }}</div>
+        <div class="stat-label">Red</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-number sev-yellow">{{ count_yellow }}</div>
+        <div class="stat-label">Yellow</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-number sev-green">{{ count_green }}</div>
+        <div class="stat-label">Green</div>
+    </div>
+</div>
+
+<div class="dashboard-grid">
+    <div class="card">
+        <div class="card-header">Severity Distribution</div>
+        {% if total > 0 %}
+        <div class="distribution-bar">
+            <div class="seg-black" style="width: {{ pct_black }}%"></div>
+            <div class="seg-red" style="width: {{ pct_red }}%"></div>
+            <div class="seg-yellow" style="width: {{ pct_yellow }}%"></div>
+            <div class="seg-green" style="width: {{ pct_green }}%"></div>
+        </div>
+        {% else %}
+        <div class="empty-state">No findings yet</div>
+        {% endif %}
+    </div>
+    <div class="card">
+        <div class="card-header">Top Hosts</div>
+        {% if top_hosts.is_empty() %}
+        <div class="empty-state">No hosts yet</div>
+        {% else %}
+        {% for h in top_hosts %}
+        <div class="host-row">
+            <span class="host-name">{{ h.host }}</span>
+            <div class="host-bar" style="width: {{ h.bar_pct }}%"></div>
+            <span class="host-count">{{ h.count }}</span>
+        </div>
+        {% endfor %}
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">Recent Findings</div>
+    {% if recent_findings.is_empty() %}
+    <div class="empty-state">No findings yet</div>
+    {% else %}
+    {% for f in recent_findings %}
+    <div class="recent-finding">
+        <span class="badge badge-{{ f.triage|lower }}">{{ f.triage }}</span>
+        <span class="rule">{{ f.rule_name }}</span>
+        <span class="path">{{ f.host }}:{{ f.file_path }}</span>
+        <span class="time">{{ f.timestamp }}</span>
+    </div>
+    {% endfor %}
+    {% endif %}
+</div>
+{% endblock %}

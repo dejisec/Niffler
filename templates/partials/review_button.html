@@ -1,0 +1,2 @@
+<button class="review-btn{% if reviewed %} reviewed{% endif %}"
+    hx-post="/api/findings/{{ id }}/review" hx-swap="outerHTML">{% if reviewed %}&#9745;{% else %}&#9744;{% endif %}</button>

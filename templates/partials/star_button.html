@@ -1,0 +1,2 @@
+<button class="star-btn{% if starred %} starred{% endif %}"
+    hx-post="/api/findings/{{ id }}/star" hx-swap="outerHTML">{% if starred %}&#9733;{% else %}&#9734;{% endif %}</button>

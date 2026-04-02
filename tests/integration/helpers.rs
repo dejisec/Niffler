@@ -5,8 +5,7 @@ use std::path::PathBuf;
 
 use niffler::classifier::Triage;
 use niffler::config::{
-    DiscoveryConfig, NifflerConfig, OperatingMode, OutputConfig, OutputFormat, ScannerConfig,
-    WalkerConfig,
+    DiscoveryConfig, NifflerConfig, OperatingMode, OutputConfig, ScannerConfig, WalkerConfig,
 };
 use niffler::nfs::connector::MockNfsConnector;
 use niffler::nfs::ops::MockNfsOps;
@@ -64,8 +63,8 @@ pub fn test_config(mode: OperatingMode) -> NifflerConfig {
             check_subtree_bypass: false,
         },
         output: OutputConfig {
-            format: OutputFormat::Json,
-            output_file: Some(std::env::temp_dir().join("niffler_integration_test.jsonl")),
+            db_path: std::env::temp_dir().join("niffler_integration_test.db"),
+            live: false,
             min_severity: Triage::Green,
         },
         rules_dir: None,

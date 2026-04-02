@@ -20,10 +20,24 @@ fn help_output_contains_description() {
 }
 
 #[test]
-fn help_output_contains_key_flags() {
+fn help_output_contains_subcommands() {
     let assert = Command::cargo_bin("niffler")
         .unwrap()
         .arg("--help")
+        .assert()
+        .success();
+
+    assert
+        .stdout(predicate::str::contains("scan"))
+        .stdout(predicate::str::contains("serve"))
+        .stdout(predicate::str::contains("export"));
+}
+
+#[test]
+fn scan_help_contains_key_flags() {
+    let assert = Command::cargo_bin("niffler")
+        .unwrap()
+        .args(["scan", "--help"])
         .assert()
         .success();
 

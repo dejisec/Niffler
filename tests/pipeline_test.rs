@@ -27,8 +27,7 @@ fn local_config(
 ) -> niffler::config::NifflerConfig {
     let mut config = helpers::test_config(mode);
     config.walker.local_paths = Some(vec![local_dir.to_path_buf()]);
-    config.output.output_file =
-        Some(std::env::temp_dir().join(format!("niffler_pipeline_{test_name}.jsonl")));
+    config.output.db_path = std::env::temp_dir().join(format!("niffler_pipeline_{test_name}.db"));
     config
 }
 
@@ -304,9 +303,8 @@ async fn pipeline_all_triage_levels_in_output() {
     // Green: README file (filename match)
     std::fs::write(tmp.path().join("README"), "project docs\n").unwrap();
 
-    let output_file = std::env::temp_dir().join("niffler_pipeline_triage_levels.jsonl");
     let mut config = local_config(OperatingMode::Scan, tmp.path(), "triage_levels");
-    config.output.output_file = Some(output_file.clone());
+    config.output.db_path = std::env::temp_dir().join("niffler_pipeline_triage_levels.db");
     let token = CancellationToken::new();
 
     let result = tokio::time::timeout(
@@ -323,18 +321,6 @@ async fn pipeline_all_triage_levels_in_output() {
         "should find at least Black + Red + Yellow + Green findings (got {})",
         stats.findings.load(Ordering::Relaxed),
     );
-
-    // Parse output JSON to verify multiple triage levels
-    if output_file.exists() {
-        let output = std::fs::read_to_string(&output_file).unwrap_or_default();
-        let has_black = output.contains("\"Black\"");
-        let has_red = output.contains("\"Red\"");
-        // Yellow and Green depend on filename rules triggering
-        assert!(
-            has_black || has_red,
-            "output should contain at least Black or Red findings"
-        );
-    }
 }
 
 #[tokio::test]
@@ -364,7 +350,6 @@ async fn pipeline_binary_file_skips_text_rules() {
         stats.files_skipped_binary.load(Ordering::Relaxed) >= 1,
         "binary file should be detected and skipped"
     );
-    // The text file should still produce findings
     assert!(
         stats.findings.load(Ordering::Relaxed) >= 1,
         "text file should still produce findings alongside binary skip"

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Hosts — Niffler{% endblock %}
+{% block content %}
+<h1 class="page-title">Hosts</h1>
+
+{% if hosts.is_empty() %}
+<div class="empty-state">No hosts found</div>
+{% else %}
+{% for h in hosts %}
+<div class="host-group">
+    <div class="host-group-header"
+         hx-get="/api/hosts/{{ h.host }}/exports"
+         hx-target="next .host-exports"
+         hx-swap="innerHTML">
+        <span class="host-group-name">{{ h.host }}</span>
+        <span class="host-group-count">{{ h.count }} findings</span>
+    </div>
+    <div class="host-exports"></div>
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

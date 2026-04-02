@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Niffler{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/niffler.css">
+    <script src="/static/js/htmx.min.js" defer></script>
+    <script>
+    function toggleDetail(btn, id) {
+        var row = btn.closest('tr');
+        var el = row.nextElementSibling;
+        while (el && !el.classList.contains('detail-row')) el = el.nextElementSibling;
+        if (!el) return;
+        if (el.style.display !== 'none' && el.querySelector('.detail-content')) {
+            el.style.display = 'none';
+            btn.innerHTML = '\u25B6';
+            btn.classList.remove('expanded');
+        } else {
+            el.style.display = '';
+            btn.innerHTML = '\u25BC';
+            btn.classList.add('expanded');
+            htmx.ajax('GET', '/api/findings/' + id, {target: el, swap: 'outerHTML'});
+        }
+    }
+    </script>
+</head>
+<body>
+    <nav class="nav">
+        <span class="nav-brand">NIFFLER</span>
+        <ul class="nav-links">
+            <li><a href="/dashboard" class="nav-link{% if active_nav == "dashboard" %} active{% endif %}">Dashboard</a></li>
+            <li><a href="/findings" class="nav-link{% if active_nav == "findings" %} active{% endif %}">Findings</a></li>
+            <li><a href="/hosts" class="nav-link{% if active_nav == "hosts" %} active{% endif %}">Hosts</a></li>
+            <li><a href="/scans" class="nav-link{% if active_nav == "scans" %} active{% endif %}">Scans</a></li>
+        </ul>
+    </nav>
+    <main class="page">
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

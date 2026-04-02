@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Scans — Niffler{% endblock %}
+{% block content %}
+<h1 class="page-title">Scans</h1>
+
+{% if scans.is_empty() %}
+<div class="empty-state">No scans found</div>
+{% else %}
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Status</th>
+            <th>Mode</th>
+            <th>Targets</th>
+            <th>Started</th>
+            <th>Completed</th>
+            <th>Hosts</th>
+            <th>Exports</th>
+            <th>Findings</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for s in scans %}
+        <tr class="scan-row">
+            <td>{{ s.id }}</td>
+            <td><span class="scan-status status-{{ s.status }}">{{ s.status }}</span></td>
+            <td>{{ s.mode }}</td>
+            <td class="mono">{{ s.targets }}</td>
+            <td class="text-dim">{{ s.started_at }}</td>
+            <td class="text-dim">{% match s.completed_at %}{% when Some with (t) %}{{ t }}{% when None %}—{% endmatch %}</td>
+            <td>{{ s.total_hosts }}</td>
+            <td>{{ s.total_exports }}</td>
+            <td><a class="scan-link" href="/findings?scan_id={{ s.id }}">{{ s.total_findings }}</a></td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+{% endblock %}

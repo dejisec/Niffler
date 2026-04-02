@@ -4,16 +4,59 @@ use anyhow::Result;
 use clap::Parser;
 use indicatif::MultiProgress;
 
-use niffler::config::cli::{Cli, Verbosity};
-use niffler::config::{NifflerConfig, OutputFormat};
+use niffler::config::NifflerConfig;
+use niffler::config::cli::{Cli, NifflerCommand, ScanArgs, Verbosity};
+use niffler::config::settings::ExportFormat;
 use niffler::nfs::{Nfs3Connector, NfsConnector};
+use niffler::output::export::{export_csv, export_json, export_tsv};
 use niffler::pipeline::{IndicatifWriter, run_pipeline};
+use niffler::web::db::{Database, FindingsQuery};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let verbosity = cli.verbosity;
 
-    let level = match cli.verbosity {
+    match cli.command {
+        NifflerCommand::Scan(args) => run_scan(args, verbosity).await,
+        NifflerCommand::Serve { db, port, bind } => {
+            niffler::web::server::start_server(&db, port, &bind).await
+        }
+        NifflerCommand::Export {
+            db,
+            format,
+            min_severity,
+            host,
+            rule,
+            scan_id,
+        } => {
+            if !db.exists() {
+                anyhow::bail!("database file not found: {}", db.display());
+            }
+            let database = Database::open(&db).await?;
+            let query = FindingsQuery {
+                scan_id,
+                host,
+                rule,
+                min_triage: min_severity.map(|t| t.to_string()),
+                per_page: u64::MAX,
+                ..Default::default()
+            };
+            let findings = database.list_findings(&query).await?;
+            let stdout = std::io::stdout();
+            let mut writer = stdout.lock();
+            match format {
+                ExportFormat::Json => export_json(&findings, &mut writer)?,
+                ExportFormat::Csv => export_csv(&findings, &mut writer)?,
+                ExportFormat::Tsv => export_tsv(&findings, &mut writer)?,
+            }
+            Ok(())
+        }
+    }
+}
+
+async fn run_scan(args: ScanArgs, verbosity: Verbosity) -> Result<()> {
+    let level = match verbosity {
         Verbosity::Trace => tracing::Level::TRACE,
         Verbosity::Debug => tracing::Level::DEBUG,
         Verbosity::Info => tracing::Level::INFO,
@@ -21,7 +64,7 @@ async fn main() -> Result<()> {
         Verbosity::Error => tracing::Level::ERROR,
     };
 
-    let config = NifflerConfig::from_cli(cli)?;
+    let config = NifflerConfig::from_scan_args(args)?;
 
     if config.generate_config {
         let toml = toml::to_string_pretty(&config)?;
@@ -29,13 +72,9 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let progress_enabled =
-        config.output.output_file.is_none() && config.output.format == OutputFormat::Console;
-    let multi = if progress_enabled {
-        Some(MultiProgress::new())
-    } else {
-        None
-    };
+    // Progress bars always enabled — SQLite is file-backed, progress uses stderr.
+    // When --live, findings go to stdout while progress stays on stderr.
+    let multi = Some(MultiProgress::new());
 
     if let Some(ref m) = multi {
         tracing_subscriber::fmt()

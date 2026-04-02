@@ -1,0 +1,58 @@
+<tr class="detail-row">
+  <td colspan="8">
+    <div class="detail-content">
+      <div>
+        <div class="detail-section-title">Match Details</div>
+        <div class="detail-field">
+          <div class="detail-label">Rule</div>
+          <div class="detail-value">{{ finding.rule_name }}</div>
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Pattern</div>
+          <div class="detail-value mono">{{ finding.matched_pattern }}</div>
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Severity</div>
+          <div class="detail-value"><span class="badge badge-{{ finding.triage|lower }}">{{ finding.triage }}</span></div>
+        </div>
+        {% if let Some(ctx) = finding.context %}
+        <div class="detail-field">
+          <div class="detail-label">Context</div>
+          <div class="detail-context">{{ ctx }}</div>
+        </div>
+        {% endif %}
+      </div>
+      <div>
+        <div class="detail-section-title">File Metadata</div>
+        <div class="detail-field">
+          <div class="detail-label">Host</div>
+          <div class="detail-value mono">{{ finding.host }}</div>
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Export</div>
+          <div class="detail-value mono">{{ finding.export_path }}</div>
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Path</div>
+          <div class="detail-value mono">{{ finding.file_path }}</div>
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Permissions</div>
+          <div class="detail-value detail-permissions">{{ permissions }}</div>
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">UID / GID</div>
+          <div class="detail-value mono">{{ finding.file_uid }} / {{ finding.file_gid }}</div>
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Size</div>
+          <div class="detail-value mono">{{ finding.file_size }} bytes</div>
+        </div>
+        <div class="detail-field">
+          <div class="detail-label">Last Modified</div>
+          <div class="detail-value">{{ finding.last_modified }}</div>
+        </div>
+      </div>
+    </div>
+  </td>
+</tr>

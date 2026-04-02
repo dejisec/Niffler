@@ -180,10 +180,25 @@ pub async fn run_pipeline(
         None
     };
 
-    // Output sink (always runs — drains result_rx)
+    // Output sink (always runs — drains result_rx, writes SQLite + optional console)
     let output_handle = {
         let output_config = config.output.clone();
-        tokio::spawn(async move { output::run(channels.result_rx, &output_config).await })
+        let mut targets = config.discovery.targets.clone().unwrap_or_default();
+        if let Some(ref paths) = config.walker.local_paths {
+            targets.extend(paths.iter().map(|p| p.display().to_string()));
+        }
+        let mode_str = config.mode.to_string();
+        let stats = Arc::clone(&stats);
+        tokio::spawn(async move {
+            output::run(
+                channels.result_rx,
+                &output_config,
+                &targets,
+                &mode_str,
+                stats,
+            )
+            .await
+        })
     };
 
     // Sequential await with sender drops for graceful channel closure.
@@ -249,7 +264,7 @@ mod tests {
 
     use crate::classifier::Triage;
     use crate::config::{
-        DiscoveryConfig, OperatingMode, OutputConfig, OutputFormat, ScannerConfig, WalkerConfig,
+        DiscoveryConfig, OperatingMode, OutputConfig, ScannerConfig, WalkerConfig,
     };
     use crate::nfs::connector::MockNfsConnector;
 
@@ -282,8 +297,8 @@ mod tests {
                 check_subtree_bypass: false,
             },
             output: OutputConfig {
-                format: OutputFormat::Json,
-                output_file: Some(std::env::temp_dir().join("niffler_test_pipeline.jsonl")),
+                db_path: std::env::temp_dir().join("niffler_test_pipeline.db"),
+                live: false,
                 min_severity: Triage::Green,
             },
             rules_dir: None,
