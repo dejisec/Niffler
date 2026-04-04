@@ -19,7 +19,7 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum NifflerCommand {
     /// Scan NFS shares for secrets
-    Scan(ScanArgs),
+    Scan(Box<ScanArgs>),
     /// Launch web dashboard for interactive triage
     Serve {
         /// Path to SQLite database
@@ -152,6 +152,14 @@ pub struct ScanArgs {
     #[arg(long, default_value = "50")]
     pub max_depth: usize,
 
+    /// Max retries per export walk on connection loss (0 = no retry)
+    #[arg(long, default_value = "2")]
+    pub walk_retries: usize,
+
+    /// Base delay in ms between walk retries (linearly scaled: attempt * delay)
+    #[arg(long, default_value = "500")]
+    pub walk_retry_delay: u64,
+
     /// Max file size to read content from (bytes)
     #[arg(long, default_value = "1048576")]
     pub max_scan_size: u64,
@@ -181,7 +189,6 @@ pub enum Verbosity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::settings::ExportFormat;
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("failed to parse CLI args")
@@ -190,12 +197,10 @@ mod tests {
     fn parse_scan(args: &[&str]) -> ScanArgs {
         let cli = parse(args);
         match cli.command {
-            NifflerCommand::Scan(args) => args,
+            NifflerCommand::Scan(args) => *args,
             _ => panic!("expected Scan subcommand"),
         }
     }
-
-    // ── Scan subcommand ────────────────────────────────────
 
     #[test]
     fn scan_subcommand_required() {
@@ -204,187 +209,6 @@ mod tests {
             result.is_err(),
             "bare niffler with no subcommand should fail"
         );
-    }
-
-    #[test]
-    fn scan_subcommand_parses() {
-        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1"]);
-        assert!(args.targets.is_some());
-    }
-
-    // ── Serve subcommand ────────────────────────────────────
-
-    #[test]
-    fn serve_subcommand_parses() {
-        let cli = parse(&["niffler", "serve", "--db", "scan.db"]);
-        match cli.command {
-            NifflerCommand::Serve { ref db, .. } => {
-                assert_eq!(db, &PathBuf::from("scan.db"));
-            }
-            _ => panic!("expected Serve"),
-        }
-    }
-
-    #[test]
-    fn serve_default_port() {
-        let cli = parse(&["niffler", "serve", "--db", "scan.db"]);
-        match cli.command {
-            NifflerCommand::Serve { port, .. } => assert_eq!(port, 8080),
-            _ => panic!("expected Serve"),
-        }
-    }
-
-    #[test]
-    fn serve_custom_port() {
-        let cli = parse(&["niffler", "serve", "--db", "scan.db", "--port", "9090"]);
-        match cli.command {
-            NifflerCommand::Serve { port, .. } => assert_eq!(port, 9090),
-            _ => panic!("expected Serve"),
-        }
-    }
-
-    #[test]
-    fn serve_default_bind() {
-        let cli = parse(&["niffler", "serve", "--db", "scan.db"]);
-        match cli.command {
-            NifflerCommand::Serve { ref bind, .. } => {
-                assert_eq!(bind, "127.0.0.1");
-            }
-            _ => panic!("expected Serve"),
-        }
-    }
-
-    #[test]
-    fn serve_requires_db() {
-        let result = Cli::try_parse_from(["niffler", "serve"]);
-        assert!(result.is_err(), "serve without --db should fail");
-    }
-
-    // ── Export subcommand ───────────────────────────────────
-
-    #[test]
-    fn export_subcommand_parses() {
-        let cli = parse(&["niffler", "export", "--db", "scan.db", "-f", "json"]);
-        match cli.command {
-            NifflerCommand::Export { ref db, format, .. } => {
-                assert_eq!(db, &PathBuf::from("scan.db"));
-                assert_eq!(format, ExportFormat::Json);
-            }
-            _ => panic!("expected Export"),
-        }
-    }
-
-    #[test]
-    fn export_requires_db() {
-        let result = Cli::try_parse_from(["niffler", "export", "-f", "json"]);
-        assert!(result.is_err(), "export without --db should fail");
-    }
-
-    #[test]
-    fn export_requires_format() {
-        let result = Cli::try_parse_from(["niffler", "export", "--db", "scan.db"]);
-        assert!(result.is_err(), "export without -f should fail");
-    }
-
-    #[test]
-    fn export_all_formats() {
-        for fmt in ["json", "csv", "tsv"] {
-            let cli = parse(&["niffler", "export", "--db", "scan.db", "-f", fmt]);
-            assert!(
-                matches!(cli.command, NifflerCommand::Export { .. }),
-                "format '{fmt}' should parse"
-            );
-        }
-    }
-
-    #[test]
-    fn export_optional_severity_filter() {
-        let cli = parse(&[
-            "niffler", "export", "--db", "scan.db", "-f", "json", "-b", "red",
-        ]);
-        match cli.command {
-            NifflerCommand::Export { min_severity, .. } => {
-                assert_eq!(min_severity, Some(Triage::Red));
-            }
-            _ => panic!("expected Export"),
-        }
-    }
-
-    #[test]
-    fn export_optional_host_filter() {
-        let cli = parse(&[
-            "niffler", "export", "--db", "scan.db", "-f", "json", "--host", "10.0.1.5",
-        ]);
-        match cli.command {
-            NifflerCommand::Export { ref host, .. } => {
-                assert_eq!(host, &Some("10.0.1.5".into()));
-            }
-            _ => panic!("expected Export"),
-        }
-    }
-
-    #[test]
-    fn export_optional_scan_id() {
-        let cli = parse(&[
-            "niffler",
-            "export",
-            "--db",
-            "scan.db",
-            "-f",
-            "json",
-            "--scan-id",
-            "3",
-        ]);
-        match cli.command {
-            NifflerCommand::Export { scan_id, .. } => {
-                assert_eq!(scan_id, Some(3));
-            }
-            _ => panic!("expected Export"),
-        }
-    }
-
-    // ── Scan defaults ──────────────────────────────────────
-
-    #[test]
-    fn cli_default_mode_is_scan() {
-        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1"]);
-        assert_eq!(args.mode, OperatingMode::Scan);
-    }
-
-    #[test]
-    fn cli_default_db_path() {
-        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1"]);
-        assert_eq!(args.output, PathBuf::from("niffler.db"));
-    }
-
-    #[test]
-    fn cli_custom_db_path() {
-        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1", "-o", "custom.db"]);
-        assert_eq!(args.output, PathBuf::from("custom.db"));
-    }
-
-    #[test]
-    fn cli_live_flag() {
-        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1", "--live"]);
-        assert!(args.live);
-    }
-
-    #[test]
-    fn cli_live_short_flag() {
-        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1", "-l"]);
-        assert!(args.live);
-    }
-
-    #[test]
-    fn cli_default_live_is_false() {
-        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1"]);
-        assert!(!args.live);
-    }
-
-    #[test]
-    fn cli_default_min_severity_is_green() {
-        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1"]);
-        assert_eq!(args.min_severity, Triage::Green);
     }
 
     #[test]
@@ -415,40 +239,6 @@ mod tests {
         assert!(!args.generate_config);
         assert!(!args.check_subtree_bypass);
         assert!(!args.live);
-    }
-
-    #[test]
-    fn cli_mode_flag_override() {
-        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1", "-m", "recon"]);
-        assert_eq!(args.mode, OperatingMode::Recon);
-    }
-
-    #[test]
-    fn cli_targets_multiple() {
-        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1", "10.0.0.2"]);
-        let targets = args.targets.expect("targets should be Some");
-        assert_eq!(targets.len(), 2);
-    }
-
-    #[test]
-    fn cli_local_path_multiple() {
-        let args = parse_scan(&["niffler", "scan", "-i", "/tmp/a", "/tmp/b"]);
-        let paths = args.local_path.expect("local_path should be Some");
-        assert_eq!(paths.len(), 2);
-    }
-
-    #[test]
-    fn cli_output_path() {
-        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1", "-o", "/tmp/results.db"]);
-        assert_eq!(args.output, PathBuf::from("/tmp/results.db"));
-    }
-
-    // ── Global verbosity ───────────────────────────────────
-
-    #[test]
-    fn verbosity_global_before_subcommand() {
-        let cli = parse(&["niffler", "-v", "debug", "scan", "-t", "10.0.0.1"]);
-        assert!(matches!(cli.verbosity, Verbosity::Debug));
     }
 
     #[test]

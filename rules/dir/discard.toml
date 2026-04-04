@@ -6,20 +6,163 @@ match_type = "Exact"
 patterns = [
     "node_modules", "__pycache__", ".cache", "vendor", "site-packages",
     ".git", ".svn", ".hg", ".tox", ".mypy_cache", ".pytest_cache",
-    "dist", "build", ".eggs", "__MACOSX", ".snapshot",
+    "dist", "build", ".eggs", "__MACOSX", ".snapshot", ".snapshots",
+    ".terraform", ".cargo", ".rustup", ".npm", ".yarn",
+    ".venv", "venv", "bower_components", ".gradle", ".m2",
+    ".next", ".nuxt",
+    "lost+found",
+
+    # Python packaging
+    "dist-packages",
+
+    # Language package manager caches
+    ".bundle", ".rubygems",
+    ".go-build", ".gopath",
+    ".composer",
+    ".cpan", ".cpanm",
+    ".cabal", ".stack",
+    ".pub-cache", ".elm", ".mix",
+
+    # Build/test output
+    "coverage", "htmlcov", ".coverage",
+    ".ruff_cache", ".eslint_cache",
 ]
 action = "Discard"
-description = "Prune directories that contain dependency or build artifacts"
+description = "Prune directories that contain dependency, build, or filesystem recovery artifacts"
 
 [[rules]]
-name = "DiscardVirtualFsDirs"
+name = "DiscardLinuxSystemPaths"
 scope = "DirectoryEnumeration"
 match_location = "FilePath"
 match_type = "StartsWith"
 patterns = [
-    "/proc", "/sys", "/dev", "/run", "/snap",
-    "/usr/share/doc", "/usr/share/man",
-    "/usr/lib/python", "/usr/lib/firmware",
+    # Virtual filesystems (no real files)
+    "/proc", "/sys", "/dev", "/run", "/selinux",
+
+    # Temp directories (extreme noise, negligible credential value on NFS)
+    "/tmp", "/var/tmp",
+
+    # System binaries (ELF executables, no text secrets)
+    "/bin", "/sbin",
+    "/usr/bin", "/usr/sbin", "/usr/libexec",
+    "/usr/local/bin", "/usr/local/sbin",
+
+    # Boot and kernel (binary images, initrd, grub modules)
+    "/boot", "/usr/src",
+    "/lib/modules", "/lib/firmware",
+    "/usr/lib/modules", "/usr/lib/firmware",
+
+    # C/C++ headers (no credentials)
+    "/usr/include", "/usr/local/include",
+
+    # System documentation
+    "/usr/share/doc", "/usr/share/man", "/usr/share/info",
+    "/usr/share/help", "/usr/share/gtk-doc", "/usr/share/licenses",
+
+    # Locale, timezone, internationalization
+    "/usr/share/locale", "/usr/share/zoneinfo", "/usr/share/i18n",
+    "/usr/lib/locale",
+
+    # Fonts, icons, themes, UI assets
+    "/usr/share/fonts", "/usr/share/icons", "/usr/share/themes",
+    "/usr/share/pixmaps", "/usr/share/sounds",
+    "/usr/share/wallpapers", "/usr/share/backgrounds", "/usr/share/color",
+
+    # Desktop environment data
+    "/usr/share/mime", "/usr/share/applications",
+    "/usr/share/glib-2.0", "/usr/share/dbus-1", "/usr/share/X11",
+
+    # Terminal definitions
+    "/usr/share/terminfo",
+
+    # Language runtime system libraries (not user code)
+    "/usr/lib/python", "/usr/share/perl", "/usr/share/perl5",
+    "/usr/share/java", "/usr/share/ruby",
+    "/usr/lib/gcc", "/usr/lib/debug", "/usr/lib/ldscripts",
+    "/usr/local/go",
+    "/usr/local/lib/python", "/usr/local/lib/ruby",
+    "/usr/local/lib/node_modules", "/usr/local/lib/perl",
+    "/usr/lib/jvm", "/usr/lib/ruby",
+    "/var/lib/gems",
+
+    # Package manager caches (additional)
+    "/var/cache/pip", "/var/cache/apk",
+    "/lib/apk/db",
+
+    # Editor/typesetting runtimes
+    "/usr/share/texmf", "/usr/share/texlive",
+    "/usr/share/vim", "/usr/share/emacs", "/usr/share/nano",
+    "/usr/share/gitweb",
+
+    # Public certificate store (no private keys — those are in /etc/ssl/private/)
+    "/etc/ssl/certs",
+
+    # Snap/Flatpak runtimes
+    "/snap", "/var/lib/snapd", "/var/lib/flatpak",
+
+    # Package manager caches and databases
+    "/var/cache/apt", "/var/cache/yum", "/var/cache/dnf", "/var/cache/pacman",
+    "/var/cache/fontconfig", "/var/cache/man", "/var/cache/ldconfig", "/var/cache/debconf",
+    "/var/lib/dpkg", "/var/lib/apt", "/var/lib/rpm", "/var/lib/pacman",
+
+    # System state (binary databases, no credentials)
+    "/var/lib/systemd", "/var/lib/dbus", "/var/lib/polkit-1",
+    "/var/lib/mlocate", "/var/lib/plocate",
 ]
 action = "Discard"
-description = "Prune virtual filesystem and system documentation paths"
+description = "Prune Linux system paths that contain binaries, documentation, locale data, package caches, and other non-credential content"
+
+[[rules]]
+name = "DiscardLanguageRuntimePaths"
+scope = "DirectoryEnumeration"
+match_location = "FilePath"
+match_type = "Regex"
+patterns = [
+    # Python stdlib and site-packages (any install prefix)
+    '(?:^|/)lib/python\d+\.\d+(/|$)',
+    # Ruby runtime
+    '(?:^|/)lib/ruby/\d+',
+    # Perl modules
+    '(?:^|/)lib/perl\d*/',
+    # Java JVM / JRE / JDK
+    '(?:^|/)lib/jvm/',
+    '(?:^|/)jre/lib/',
+    '(?:^|/)jdk[^/]*/lib/',
+    # Node.js system libraries
+    '(?:^|/)lib/nodejs/',
+    '(?:^|/)lib/node_modules/',
+    # Go module cache
+    '(?:^|/)go/pkg/',
+    # PHP runtime
+    '(?:^|/)lib/php\d*/',
+    '(?:^|/)share/php',
+    # R statistical language
+    '(?:^|/)lib/R/',
+    # Erlang/OTP
+    '(?:^|/)lib/erlang/',
+]
+action = "Discard"
+description = "Prune language runtime and standard library directories regardless of installation prefix"
+
+[[rules]]
+name = "DiscardPackageMetadataDirs"
+scope = "DirectoryEnumeration"
+match_location = "FileName"
+match_type = "EndsWith"
+patterns = [".egg-info", ".dist-info"]
+action = "Discard"
+description = "Prune Python package metadata directories — pure metadata, no secrets"
+
+[[rules]]
+name = "DiscardContainerRuntimePaths"
+scope = "DirectoryEnumeration"
+match_location = "FilePath"
+match_type = "StartsWith"
+patterns = [
+    "/var/lib/docker/overlay2",
+    "/var/lib/docker/image",
+    "/var/lib/docker/buildkit",
+    "/var/lib/containerd/io.containerd",
+]
+action = "Discard"
+description = "Prune container runtime layer storage — binary overlays, no scannable content"

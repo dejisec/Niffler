@@ -57,6 +57,14 @@ const DEFAULT_RULES: &[(&str, &str)] = &[
         "content/linux.toml",
         include_str!("../../rules/content/linux.toml"),
     ),
+    (
+        "content/tokens.toml",
+        include_str!("../../rules/content/tokens.toml"),
+    ),
+    (
+        "content/network.toml",
+        include_str!("../../rules/content/network.toml"),
+    ),
 ];
 
 /// Load all embedded default rules compiled into the binary.

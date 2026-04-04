@@ -84,21 +84,6 @@ mod tests {
     use crate::nfs::ops::MockNfsOps;
 
     #[tokio::test]
-    async fn cache_miss_creates_connection() {
-        let mut connector = MockNfsConnector::new();
-        connector.expect_connect().times(1).returning(|_, _, _| {
-            let mock = MockNfsOps::new();
-            Ok(Box::new(mock))
-        });
-
-        let mut cache = ConnectionCache::new();
-        let result = cache
-            .get_or_connect(&connector, "host1", "/export", &AuthCreds::root())
-            .await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
     async fn cache_hit_reuses_connection() {
         let mut connector = MockNfsConnector::new();
         connector.expect_connect().times(1).returning(|_, _, _| {

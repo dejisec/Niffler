@@ -335,8 +335,6 @@ mod tests {
         }
     }
 
-    // --- UID cycling tests ---
-
     #[tokio::test]
     async fn uid_cycling_primary_succeeds_no_cycling() {
         let mut connector = MockNfsConnector::new();
@@ -637,8 +635,6 @@ mod tests {
         assert_eq!(r2, b"cached");
     }
 
-    // --- scan_file helpers ---
-
     fn test_file_msg(name: &str) -> FileMsg {
         FileMsg {
             host: "testhost".into(),
@@ -727,8 +723,6 @@ mod tests {
     fn noop_connector() -> MockNfsConnector {
         MockNfsConnector::new()
     }
-
-    // --- scan_file tests ---
 
     #[tokio::test]
     async fn scan_file_name_rule_snaffle() {

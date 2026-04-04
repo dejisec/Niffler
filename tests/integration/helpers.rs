@@ -14,6 +14,16 @@ use niffler::nfs::{
 };
 use niffler::pipeline::{FileMsg, FileReader};
 
+/// Create a temp directory under `CARGO_MANIFEST_DIR` instead of `/tmp`,
+/// avoiding `DiscardLinuxSystemPaths` pruning scan input.
+#[allow(dead_code)]
+pub fn scan_tempdir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("niffler-test-")
+        .tempdir_in(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+        .unwrap()
+}
+
 /// Resolve a path relative to `tests/fixtures/`.
 pub fn fixture_path(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -51,6 +61,10 @@ pub fn test_config(mode: OperatingMode) -> NifflerConfig {
             max_depth: 50,
             local_paths: None,
             max_connections_per_host: 4,
+            walk_retries: 2,
+            walk_retry_delay_ms: 500,
+            uid_cycle: true,
+            max_uid_attempts: 5,
         },
         scanner: ScannerConfig {
             scanner_tasks: 5,

@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
     let verbosity = cli.verbosity;
 
     match cli.command {
-        NifflerCommand::Scan(args) => run_scan(args, verbosity).await,
+        NifflerCommand::Scan(args) => run_scan(*args, verbosity).await,
         NifflerCommand::Serve { db, port, bind } => {
             niffler::web::server::start_server(&db, port, &bind).await
         }

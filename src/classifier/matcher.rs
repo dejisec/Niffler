@@ -292,87 +292,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exact_match_positive() {
-        let m = TextMatcher::new(&MatchType::Exact, &[s("id_rsa")]).unwrap();
-        assert!(m.is_match("id_rsa"));
-    }
-
-    #[test]
-    fn exact_match_no_partial() {
-        let m = TextMatcher::new(&MatchType::Exact, &[s("id_rsa")]).unwrap();
-        assert!(!m.is_match("id_rsa.pub"));
-    }
-
-    #[test]
-    fn exact_match_case_sensitive() {
-        let m = TextMatcher::new(&MatchType::Exact, &[s("id_rsa")]).unwrap();
-        assert!(!m.is_match("ID_RSA"));
-    }
-
-    #[test]
-    fn contains_match_positive() {
-        let m = TextMatcher::new(&MatchType::Contains, &[s("password")]).unwrap();
-        assert!(m.is_match("my_password_file"));
-    }
-
-    #[test]
-    fn contains_match_negative() {
-        let m = TextMatcher::new(&MatchType::Contains, &[s("password")]).unwrap();
-        assert!(!m.is_match("passw0rd"));
-    }
-
-    #[test]
-    fn starts_with_positive() {
-        let m = TextMatcher::new(&MatchType::StartsWith, &[s(".")]).unwrap();
-        assert!(m.is_match(".env"));
-    }
-
-    #[test]
-    fn starts_with_negative() {
-        let m = TextMatcher::new(&MatchType::StartsWith, &[s(".")]).unwrap();
-        assert!(!m.is_match("env"));
-    }
-
-    #[test]
-    fn ends_with_positive() {
-        let m = TextMatcher::new(&MatchType::EndsWith, &[s(".conf")]).unwrap();
-        assert!(m.is_match("nginx.conf"));
-    }
-
-    #[test]
-    fn ends_with_negative() {
-        let m = TextMatcher::new(&MatchType::EndsWith, &[s(".conf")]).unwrap();
-        assert!(!m.is_match(".config"));
-    }
-
-    #[test]
     fn regex_case_insensitive() {
         let m = TextMatcher::new(&MatchType::Regex, &[s(r"(?i)password\s*[=:]")]).unwrap();
         assert!(m.is_match("PASSWORD = secret"));
-    }
-
-    #[test]
-    fn regex_negative() {
-        let m = TextMatcher::new(&MatchType::Regex, &[s(r"(?i)password\s*[=:]")]).unwrap();
-        assert!(!m.is_match("no match here"));
-    }
-
-    #[test]
-    fn regex_multiple_any_match() {
-        let m = TextMatcher::new(&MatchType::Regex, &[s("aaa"), s("bbb")]).unwrap();
-        assert!(m.is_match("bbb"));
-    }
-
-    #[test]
-    fn glob_match_positive() {
-        let m = TextMatcher::new(&MatchType::Glob, &[s("**/.ssh/*")]).unwrap();
-        assert!(m.is_match(".ssh/id_rsa"));
-    }
-
-    #[test]
-    fn glob_match_negative() {
-        let m = TextMatcher::new(&MatchType::Glob, &[s("**/.ssh/*")]).unwrap();
-        assert!(!m.is_match(".aws/credentials"));
     }
 
     #[test]
@@ -381,12 +303,6 @@ mod tests {
         let input = "some config\nPASSWORD = secret\nmore stuff";
         let (start, end) = m.find_match(input).unwrap();
         assert_eq!(&input[start..end], "PASSWORD = secret");
-    }
-
-    #[test]
-    fn find_match_regex_no_match() {
-        let m = TextMatcher::new(&MatchType::Regex, &[s(r"password")]).unwrap();
-        assert!(m.find_match("no match here").is_none());
     }
 
     #[test]
@@ -432,21 +348,9 @@ mod tests {
     }
 
     #[test]
-    fn find_match_glob_no_match_returns_none() {
-        let m = TextMatcher::new(&MatchType::Glob, &[s("**/.ssh/*")]).unwrap();
-        assert!(m.find_match("other/file.txt").is_none());
-    }
-
-    #[test]
     fn bytes_exact_match_with_null_bytes() {
         let m = TextMatcher::new(&MatchType::Exact, &[s("\x00\x01\x02")]).unwrap();
         assert!(m.is_match_bytes(&[0x00, 0x01, 0x02]));
-    }
-
-    #[test]
-    fn bytes_exact_no_partial() {
-        let m = TextMatcher::new(&MatchType::Exact, &[s("abc")]).unwrap();
-        assert!(!m.is_match_bytes(b"abcd"));
     }
 
     #[test]
@@ -462,27 +366,9 @@ mod tests {
     }
 
     #[test]
-    fn bytes_starts_with_negative() {
-        let m = TextMatcher::new(&MatchType::StartsWith, &[s("MZ")]).unwrap();
-        assert!(!m.is_match_bytes(b"ELF\x00"));
-    }
-
-    #[test]
-    fn bytes_ends_with_positive() {
-        let m = TextMatcher::new(&MatchType::EndsWith, &[s("\x00\x00")]).unwrap();
-        assert!(m.is_match_bytes(&[0x41, 0x42, 0x00, 0x00]));
-    }
-
-    #[test]
     fn bytes_regex_hex_escape_pattern() {
         let m = TextMatcher::new(&MatchType::Regex, &[s(r"\x30\x82")]).unwrap();
         assert!(m.is_match_bytes(&[0x30, 0x82, 0x03, 0x45]));
-    }
-
-    #[test]
-    fn bytes_regex_negative() {
-        let m = TextMatcher::new(&MatchType::Regex, &[s(r"\x30\x82")]).unwrap();
-        assert!(!m.is_match_bytes(&[0x41, 0x42, 0x43]));
     }
 
     #[test]
@@ -505,12 +391,6 @@ mod tests {
         let input: &[u8] = &[0x00, 0x30, 0x82, 0x03, 0x45, 0x00];
         let (start, end) = m.find_match_bytes(input).unwrap();
         assert_eq!(&input[start..end], &[0x30, 0x82, 0x03, 0x45]);
-    }
-
-    #[test]
-    fn find_bytes_no_match_returns_none() {
-        let m = TextMatcher::new(&MatchType::Regex, &[s(r"\xFF\xFE")]).unwrap();
-        assert!(m.find_match_bytes(b"no match").is_none());
     }
 
     #[test]

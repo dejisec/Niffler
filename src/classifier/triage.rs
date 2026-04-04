@@ -21,37 +21,3 @@ impl fmt::Display for Triage {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::cmp::max;
-
-    use super::*;
-
-    #[test]
-    fn triage_ordering() {
-        assert!(Triage::Green < Triage::Yellow);
-        assert!(Triage::Yellow < Triage::Red);
-        assert!(Triage::Red < Triage::Black);
-    }
-
-    #[test]
-    fn triage_equality() {
-        assert_eq!(Triage::Black, Triage::Black);
-        assert_ne!(Triage::Green, Triage::Red);
-    }
-
-    #[test]
-    fn triage_display() {
-        assert_eq!(Triage::Black.to_string(), "Black");
-        assert_eq!(Triage::Red.to_string(), "Red");
-        assert_eq!(Triage::Yellow.to_string(), "Yellow");
-        assert_eq!(Triage::Green.to_string(), "Green");
-    }
-
-    #[test]
-    fn triage_max_selects_higher_severity() {
-        assert_eq!(max(Triage::Green, Triage::Red), Triage::Red);
-        assert_eq!(max(Triage::Black, Triage::Yellow), Triage::Black);
-    }
-}

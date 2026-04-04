@@ -1,0 +1,28 @@
+[[rules]]
+name = "TokenPatterns"
+scope = "ContentsEnumeration"
+match_location = "FileContentAsString"
+match_type = "Regex"
+patterns = [
+    'xox[pboa]-[0-9]{10,}',
+    'hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+',
+    'ghp_[A-Za-z0-9]{36}',
+    'gho_[A-Za-z0-9]{36}',
+    'github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}',
+    'glpat-[A-Za-z0-9\-_]{20,}',
+    'discord\.com/api/webhooks/\d+/[A-Za-z0-9_-]+',
+    'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_.+-]+',
+    'SG\.[A-Za-z0-9_-]{20,}',
+    'npm_[A-Za-z0-9]{36}',
+    'pypi-[A-Za-z0-9_-]{16,}',
+    'sk-proj-[A-Za-z0-9_-]{40,}',
+    'sk-ant-[A-Za-z0-9_-]{40,}',
+    'hf_[A-Za-z0-9]{34}',
+    'hv[sb]\.[A-Za-z0-9_-]{24,}',
+    'shp(at|ss|ca|pa)_[a-fA-F0-9]{32}',
+]
+action = "Snaffle"
+triage = "Red"
+max_size = 1048576
+context_bytes = 200
+description = "SaaS tokens and webhooks -- Slack, GitHub, GitLab, Discord, JWT"

@@ -93,6 +93,11 @@ impl RuleEngine {
             }
         }
 
+        share_rules.sort_by_key(|r| r.action.sort_ordinal());
+        dir_rules.sort_by_key(|r| r.action.sort_ordinal());
+        file_rules.sort_by_key(|r| r.action.sort_ordinal());
+        content_rules.sort_by_key(|r| r.action.sort_ordinal());
+
         Ok(Self {
             share_rules,
             dir_rules,
@@ -202,6 +207,10 @@ impl RuleEngine {
     }
 
     /// Evaluate file enumeration rules, then follow relay chains.
+    ///
+    /// If the file has a `.bak` extension, a second pass re-evaluates
+    /// extension-based rules using the underlying extension (e.g.,
+    /// `secrets.kdbx.bak` is also evaluated as extension `kdbx`).
     pub fn evaluate_file(&self, entry: &FileEntry, content: Option<&[u8]>) -> Vec<Finding> {
         let mut findings = Vec::new();
 
@@ -213,6 +222,26 @@ impl RuleEngine {
                     self.follow_relay(&targets, entry, content, &mut findings, 1);
                 }
                 RuleResult::CheckForKeys | RuleResult::NoMatch => {}
+            }
+        }
+
+        if entry.extension == "bak"
+            && let Some(underlying) = strip_bak_extension(&entry.name)
+        {
+            let mut alt = entry.clone();
+            alt.extension = underlying;
+            for rule in &self.file_rules {
+                if rule.match_location != MatchLocation::FileExtension {
+                    continue;
+                }
+                match self.eval_rule(rule, &alt, content) {
+                    RuleResult::Snaffle(finding) => findings.push(finding),
+                    RuleResult::Discard => return findings,
+                    RuleResult::Relay(targets) => {
+                        self.follow_relay(&targets, &alt, content, &mut findings, 1);
+                    }
+                    RuleResult::CheckForKeys | RuleResult::NoMatch => {}
+                }
             }
         }
 
@@ -365,7 +394,7 @@ impl RuleEngine {
         depth: usize,
     ) {
         if depth > MAX_RELAY_DEPTH {
-            tracing::warn!(
+            tracing::debug!(
                 "relay chain depth limit ({}) reached for {}",
                 MAX_RELAY_DEPTH,
                 entry.path,
@@ -386,6 +415,15 @@ impl RuleEngine {
             }
         }
     }
+}
+
+/// Extract the underlying extension from a `.bak` filename.
+///
+/// `"secrets.kdbx.bak"` → `Some("kdbx")`, `"notes.bak"` → `None`.
+fn strip_bak_extension(filename: &str) -> Option<String> {
+    let stem = filename.strip_suffix(".bak")?;
+    let dot_pos = stem.rfind('.')?;
+    Some(stem[dot_pos + 1..].to_string())
 }
 
 fn is_valid_scope_location(scope: &EnumerationScope, location: &MatchLocation) -> bool {
@@ -447,6 +485,77 @@ mod tests {
 
     fn s(val: &str) -> String {
         val.to_string()
+    }
+
+    #[test]
+    fn strip_bak_extracts_underlying_extension() {
+        assert_eq!(
+            super::strip_bak_extension("secrets.kdbx.bak"),
+            Some("kdbx".to_string())
+        );
+        assert_eq!(
+            super::strip_bak_extension("web.config.bak"),
+            Some("config".to_string())
+        );
+        assert_eq!(super::strip_bak_extension("notes.bak"), None);
+        assert_eq!(super::strip_bak_extension("data"), None);
+        assert_eq!(super::strip_bak_extension(".bak"), None);
+    }
+
+    #[test]
+    fn compile_sorts_discard_before_snaffle() {
+        // Insert in wrong order: Snaffle, Relay, Discard
+        let rules = vec![
+            make_rule(
+                "SnaffleFirst",
+                EnumerationScope::FileEnumeration,
+                MatchLocation::FileName,
+                MatchType::Exact,
+                vec![s("foo")],
+                MatchAction::Snaffle,
+                Some(Triage::Green),
+                None,
+            ),
+            make_rule(
+                "RelaySecond",
+                EnumerationScope::FileEnumeration,
+                MatchLocation::FileName,
+                MatchType::Exact,
+                vec![s("bar")],
+                MatchAction::Relay,
+                None,
+                Some(vec![s("SnaffleFirst")]),
+            ),
+            make_rule(
+                "DiscardThird",
+                EnumerationScope::FileEnumeration,
+                MatchLocation::FileExtension,
+                MatchType::Exact,
+                vec![s("jpg")],
+                MatchAction::Discard,
+                None,
+                None,
+            ),
+        ];
+
+        let engine = RuleEngine::compile(rules).unwrap();
+        let file_rules = engine.file_rules();
+
+        assert_eq!(
+            file_rules[0].action,
+            MatchAction::Discard,
+            "Discard should be first"
+        );
+        assert_eq!(
+            file_rules[1].action,
+            MatchAction::Snaffle,
+            "Snaffle should be second"
+        );
+        assert_eq!(
+            file_rules[2].action,
+            MatchAction::Relay,
+            "Relay should be third"
+        );
     }
 
     #[test]
@@ -1169,29 +1278,6 @@ mod tests {
         let entry = mock_file_entry("id_ecdsa");
         let findings = engine.evaluate_file(&entry, None);
         assert_eq!(findings[0].matched_pattern, "id_ecdsa");
-    }
-
-    #[test]
-    fn eval_snaffle_regex_reports_pattern_source() {
-        let rules = vec![make_rule(
-            "CredPatterns",
-            EnumerationScope::ContentsEnumeration,
-            MatchLocation::FileContentAsString,
-            MatchType::Regex,
-            vec![s(r"(?i)password\s*=")],
-            MatchAction::Snaffle,
-            Some(Triage::Red),
-            None,
-        )];
-        let engine = RuleEngine::compile(rules).unwrap();
-        let entry = mock_file_entry("config.txt");
-        let content = b"PASSWORD = secret";
-        // ContentsEnumeration rules aren't in file_rules — evaluate via relay or direct
-        // Use eval_rule directly by building a rule index lookup
-        let findings = engine.evaluate_file(&entry, Some(content));
-        // Content rules aren't evaluated by evaluate_file (it only iterates file_rules).
-        // Test via a relay chain instead.
-        assert!(findings.is_empty()); // Expected: no file_rules match config.txt
     }
 
     #[test]

@@ -150,8 +150,6 @@ mod tests {
         ops
     }
 
-    // --- no_root_squash tests ---
-
     #[tokio::test]
     async fn no_root_squash_detected_when_root_reads_succeed() {
         let mut mock = MockNfsConnector::new();
@@ -182,8 +180,6 @@ mod tests {
         assert_eq!(result, None);
     }
 
-    // --- insecure export tests ---
-
     #[tokio::test]
     async fn insecure_export_detected_when_unprivileged_connects() {
         let mut mock = MockNfsConnector::new();
@@ -203,8 +199,6 @@ mod tests {
         let result = check_insecure_export(&mock, "host", "/export").await;
         assert_eq!(result, None);
     }
-
-    // --- subtree bypass tests ---
 
     #[tokio::test]
     async fn subtree_bypass_detected_when_parent_lookup_succeeds() {
@@ -266,8 +260,6 @@ mod tests {
         let result = check_subtree_bypass(&mock, "host", "/export").await;
         assert_eq!(result, None);
     }
-
-    // --- combined detection tests ---
 
     #[tokio::test]
     async fn detect_all_misconfigs_combines_results() {

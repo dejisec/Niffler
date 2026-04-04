@@ -1,0 +1,32 @@
+[[rules]]
+name = "NetworkCredentialPatterns"
+scope = "ContentsEnumeration"
+match_location = "FileContentAsString"
+match_type = "Regex"
+patterns = [
+    '(?i)enable\s+(secret|password)\s+\S+',
+    '(?i)snmp-server\s+community\s+\S+',
+    '(?i)username\s+\S+\s+(secret|password)\s+\d+\s+\S+',
+    "(?i)jdbc:(mysql|postgresql|oracle|sqlserver|mariadb)://[^\\s\"']{10,}",
+]
+action = "Snaffle"
+triage = "Red"
+max_size = 1048576
+context_bytes = 200
+description = "Network device credentials, SNMP community strings, JDBC connection strings"
+
+[[rules]]
+name = "SqlAccountCreation"
+scope = "ContentsEnumeration"
+match_location = "FileContentAsString"
+match_type = "Regex"
+patterns = [
+    '(?i)CREATE\s+(USER|LOGIN)\s+\S+',
+    "(?i)IDENTIFIED\\s+BY\\s+['\"][^'\"]+['\"]",
+    "(?i)WITH\\s+PASSWORD\\s*=\\s*['\"][^'\"]+['\"]",
+]
+action = "Snaffle"
+triage = "Red"
+max_size = 1048576
+context_bytes = 200
+description = "SQL account creation with embedded passwords"

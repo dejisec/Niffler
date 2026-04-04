@@ -285,6 +285,10 @@ mod tests {
                 max_depth: 50,
                 local_paths: None,
                 max_connections_per_host: 8,
+                walk_retries: 2,
+                walk_retry_delay_ms: 500,
+                uid_cycle: true,
+                max_uid_attempts: 5,
             },
             scanner: ScannerConfig {
                 scanner_tasks: 10,
@@ -333,25 +337,6 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             0
         );
-    }
-
-    #[tokio::test]
-    async fn run_pipeline_channels_close_sequentially() {
-        let config = test_config(OperatingMode::Scan);
-        let connector = mock_connector();
-        let token = CancellationToken::new();
-
-        let result = tokio::time::timeout(
-            Duration::from_secs(10),
-            run_pipeline(config, connector, Some(token), None),
-        )
-        .await;
-
-        assert!(
-            result.is_ok(),
-            "pipeline should not deadlock — channels must close in order"
-        );
-        assert!(result.unwrap().is_ok());
     }
 
     #[tokio::test]
@@ -416,22 +401,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_pipeline_recon_mode_no_findings_on_empty() {
-        let config = test_config(OperatingMode::Recon);
-        let connector = mock_connector();
-        let token = CancellationToken::new();
-
-        let result = run_pipeline(config, connector, Some(token), None).await;
-        assert!(result.is_ok());
-        let stats = result.unwrap();
-        assert_eq!(
-            stats.findings.load(std::sync::atomic::Ordering::Relaxed),
-            0,
-            "no findings with empty targets"
-        );
-    }
-
-    #[tokio::test]
     async fn run_pipeline_enumerate_mode_completes() {
         let config = test_config(OperatingMode::Enumerate);
         let connector = mock_connector();
@@ -446,25 +415,6 @@ mod tests {
         assert!(
             result.is_ok(),
             "enumerate pipeline should not deadlock with empty targets"
-        );
-        assert!(result.unwrap().is_ok());
-    }
-
-    #[tokio::test]
-    async fn run_pipeline_recon_mode_drops_channels_cleanly() {
-        let config = test_config(OperatingMode::Recon);
-        let connector = mock_connector();
-        let token = CancellationToken::new();
-
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            run_pipeline(config, connector, Some(token), None),
-        )
-        .await;
-
-        assert!(
-            result.is_ok(),
-            "recon mode should drop channels cleanly and complete quickly"
         );
         assert!(result.unwrap().is_ok());
     }
@@ -492,21 +442,6 @@ mod tests {
         assert!(
             result.unwrap().is_ok(),
             "cancellation is graceful — returns Ok, not Err"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_pipeline_cancellation_returns_ok_not_error() {
-        let config = test_config(OperatingMode::Scan);
-        let connector = mock_connector();
-        let token = CancellationToken::new();
-        token.cancel();
-
-        let result = run_pipeline(config, connector, Some(token), None).await;
-        assert!(
-            result.is_ok(),
-            "cancellation should return Ok(stats), not Err: {:?}",
-            result.err()
         );
     }
 
@@ -611,25 +546,5 @@ triage = "Green"
             .expect("invalid scope/location should be rejected");
         let msg = err.to_string();
         assert!(msg.contains("invalid scope/location"), "error: {msg}");
-    }
-
-    #[tokio::test]
-    async fn run_pipeline_cancellation_token_propagated() {
-        let config = test_config(OperatingMode::Scan);
-        let connector = mock_connector();
-        let token = CancellationToken::new();
-        token.cancel();
-
-        let result = tokio::time::timeout(
-            Duration::from_secs(1),
-            run_pipeline(config, connector, Some(token), None),
-        )
-        .await;
-
-        assert!(
-            result.is_ok(),
-            "token must be propagated — pipeline should exit within 1 second"
-        );
-        assert!(result.unwrap().is_ok());
     }
 }

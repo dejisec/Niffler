@@ -3,19 +3,29 @@ name = "EnvFiles"
 scope = "FileEnumeration"
 match_location = "FileName"
 match_type = "Regex"
-patterns = ['\.env(\.(local|dev|staging|prod|production|backup|example|sample|test))?$']
+patterns = ['\.env([._](local|dev|staging|prod|production|backup|test))?$']
+action = "Relay"
+relay_targets = ["CredentialPatterns", "CloudKeyPatterns", "TokenPatterns"]
+description = "Environment variable files -- likely contain secrets"
+
+[[rules]]
+name = "EnvWordFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['(^|[_\-])env([_.\-]|$)']
 action = "Relay"
 relay_targets = ["CredentialPatterns", "CloudKeyPatterns"]
-description = "Environment variable files -- likely contain secrets"
+description = "Files with 'env' as a word component -- may contain environment credentials"
 
 [[rules]]
 name = "ConfigFileExtensions"
 scope = "FileEnumeration"
 match_location = "FileExtension"
 match_type = "Exact"
-patterns = ["yaml", "yml", "json", "toml", "ini", "cfg", "conf", "cnf", "config"]
+patterns = ["yaml", "yml", "json", "toml", "ini", "cfg", "conf", "cnf", "config", "xml", "hcl"]
 action = "Relay"
-relay_targets = ["CredentialPatterns", "ConnectionStrings"]
+relay_targets = ["CredentialPatterns", "CloudKeyPatterns", "ConnectionStrings", "TokenPatterns"]
 description = "Configuration files -- may contain embedded credentials or connection strings"
 
 [[rules]]
@@ -25,7 +35,7 @@ match_location = "FileExtension"
 match_type = "Exact"
 patterns = ["sh", "bash", "zsh", "ksh", "csh"]
 action = "Relay"
-relay_targets = ["CredentialPatterns"]
+relay_targets = ["CredentialPatterns", "TokenPatterns"]
 description = "Shell scripts -- may contain hardcoded credentials"
 
 [[rules]]
@@ -35,7 +45,7 @@ match_location = "FileExtension"
 match_type = "Exact"
 patterns = ["py"]
 action = "Relay"
-relay_targets = ["CredentialPatterns", "CloudKeyPatterns"]
+relay_targets = ["CredentialPatterns", "CloudKeyPatterns", "TokenPatterns"]
 description = "Python files -- may contain hardcoded API keys and credentials"
 
 [[rules]]
@@ -63,7 +73,7 @@ name = "AnsibleFiles"
 scope = "FileEnumeration"
 match_location = "FileName"
 match_type = "Regex"
-patterns = ['(?i)(playbook|inventory|vault|ansible).*\.(ya?ml|cfg)$']
+patterns = ['(?i)(playbook|inventory|vault|ansible).*\.(ya?ml|cfg|ini|txt)$']
 action = "Relay"
 relay_targets = ["CredentialPatterns"]
 description = "Ansible configuration and playbook files -- may contain vault passwords"
@@ -73,7 +83,7 @@ name = "TerraformStateFiles"
 scope = "FileEnumeration"
 match_location = "FileName"
 match_type = "Regex"
-patterns = ['\.tfstate(\.backup)?$', '\.tfvars$']
+patterns = ['\.tfstate(\.backup)?$', '\.tfvars$', '\.tf$']
 action = "Relay"
 relay_targets = ["CredentialPatterns", "CloudKeyPatterns"]
 description = "Terraform state and variable files -- often contain cloud credentials"
@@ -85,7 +95,7 @@ match_location = "FileExtension"
 match_type = "Exact"
 patterns = ["bak", "old", "orig", "save", "swp", "sav"]
 action = "Relay"
-relay_targets = ["CredentialPatterns", "ConnectionStrings"]
+relay_targets = ["CredentialPatterns", "ConnectionStrings", "TokenPatterns"]
 description = "Backup and swap files -- may be copies of config files with credentials"
 
 [[rules]]
@@ -102,3 +112,314 @@ patterns = [
 action = "Snaffle"
 triage = "Red"
 description = "Shell and application command history -- may contain typed credentials"
+
+[[rules]]
+name = "HiddenDotfiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['^\.']
+action = "Relay"
+relay_targets = ["CredentialPatterns", "CloudKeyPatterns", "ConnectionStrings", "TokenPatterns"]
+description = "Hidden dotfiles -- relay to content scan for credential detection"
+
+[[rules]]
+name = "AppCredentialPaths"
+scope = "FileEnumeration"
+match_location = "FilePath"
+match_type = "Glob"
+patterns = [
+    "**/.gem/credentials",
+    "**/.m2/settings.xml",
+    "**/.gradle/gradle.properties",
+]
+action = "Relay"
+relay_targets = ["CredentialPatterns"]
+description = "Application credential files at well-known dotfile paths"
+
+[[rules]]
+name = "PasswordFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['(?i)passwords?\.(txt|docx?|xlsx?|csv)$']
+action = "Snaffle"
+triage = "Red"
+description = "Common password list files"
+
+[[rules]]
+name = "VaultPasswordFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['(?i)vault[_-]?pass(word)?']
+action = "Snaffle"
+triage = "Red"
+description = "Vault password files -- Ansible vault, HashiCorp vault password files"
+
+[[rules]]
+name = "WebAuthFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [".htpasswd", ".htaccess"]
+action = "Snaffle"
+triage = "Red"
+description = "Apache authentication and access control files"
+
+[[rules]]
+name = "DbCredentialFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [".pgpass", ".my.cnf", ".dbshell"]
+action = "Relay"
+relay_targets = ["CredentialPatterns"]
+description = "Database client credential files"
+
+[[rules]]
+name = "CiCdCredentials"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = ["credentials.xml"]
+action = "Relay"
+relay_targets = ["CredentialPatterns"]
+description = "Jenkins and CI/CD credential stores"
+
+[[rules]]
+name = "DeploymentConfigs"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = ["unattend.xml", "customsettings.ini", "sysprep.inf"]
+action = "Relay"
+relay_targets = ["CredentialPatterns"]
+description = "Windows deployment configuration files with embedded credentials"
+
+[[rules]]
+name = "CertificateExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["pem", "pfx", "p12", "crt", "cer", "key"]
+action = "Relay"
+relay_targets = ["CryptoPatterns"]
+description = "Certificate and key files -- relay to crypto content detection"
+
+[[rules]]
+name = "RemoteAccessConfigs"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['(?i)^(mobaxterm\.ini|confCons\.xml)$']
+action = "Relay"
+relay_targets = ["CredentialPatterns"]
+description = "Remote access tool configuration files with stored credentials"
+
+[[rules]]
+name = "LanguageRelayRuby"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["rb"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "CloudKeyPatterns", "TokenPatterns"]
+description = "Ruby source files"
+
+[[rules]]
+name = "LanguageRelayPerl"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["pl", "pm"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "TokenPatterns"]
+description = "Perl source files"
+
+[[rules]]
+name = "LanguageRelayPhp"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["php"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "CloudKeyPatterns", "ConnectionStrings", "TokenPatterns"]
+description = "PHP source files"
+
+[[rules]]
+name = "LanguageRelayJava"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["java"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "ConnectionStrings", "NetworkCredentialPatterns", "TokenPatterns"]
+description = "Java source files"
+
+[[rules]]
+name = "LanguageRelayGo"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["go"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "CloudKeyPatterns", "TokenPatterns"]
+description = "Go source files"
+
+[[rules]]
+name = "LanguageRelayRust"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["rs"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "TokenPatterns"]
+description = "Rust source files"
+
+[[rules]]
+name = "LanguageRelayCFamily"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["c", "cpp", "h", "hpp", "cs"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "ConnectionStrings"]
+description = "C, C++, and C# source files"
+
+[[rules]]
+name = "LanguageRelayJs"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["js", "ts", "jsx", "tsx", "mjs"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "CloudKeyPatterns", "TokenPatterns"]
+description = "JavaScript and TypeScript source files"
+
+[[rules]]
+name = "NamedConfigRelay"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [
+    "wp-config.php", "LocalSettings.php", "database.yml",
+    "knife.rb", "settings.py", "application.properties",
+]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "ConnectionStrings"]
+description = "Well-known application config files likely to contain credentials"
+
+[[rules]]
+name = "VpnConfigFiles"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["ovpn", "tblk"]
+action = "Relay"
+relay_targets = ["CredentialPatterns"]
+description = "VPN configuration files -- may contain embedded credentials"
+
+[[rules]]
+name = "SqlFiles"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["sql"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "ConnectionStrings", "SqlAccountCreation", "LinuxSecrets"]
+description = "SQL files -- may contain credentials, connection strings, or password hashes"
+
+[[rules]]
+name = "PowerShellFiles"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["ps1", "psm1", "psd1"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "CloudKeyPatterns", "TokenPatterns"]
+description = "PowerShell scripts -- may contain hardcoded credentials"
+
+[[rules]]
+name = "WindowsBatchFiles"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["bat", "cmd"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "TokenPatterns"]
+description = "Windows batch scripts -- may contain hardcoded credentials"
+
+[[rules]]
+name = "PackageManagerAuthFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [".npmrc", ".pypirc", ".yarnrc", ".gemrc"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "TokenPatterns"]
+description = "Package manager config files -- often contain auth tokens for private registries"
+
+[[rules]]
+name = "GenericSecretsFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['(?i)(secret|credential)s?\.(ya?ml|json|toml|xml|txt|conf|env)$']
+action = "Relay"
+relay_targets = ["CredentialPatterns", "CloudKeyPatterns", "TokenPatterns"]
+description = "Files named secrets/credentials -- likely contain sensitive material"
+
+[[rules]]
+name = "ApplicationConfigFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = [
+    '(?i)^appsettings(\.[a-z]+)?\.json$',
+    '(?i)^application(-[a-z]+)?\.(ya?ml|properties)$',
+    '(?i)^bootstrap\.(ya?ml|properties)$',
+]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "ConnectionStrings"]
+description = "Application framework config files -- Spring Boot, ASP.NET Core"
+
+[[rules]]
+name = "SshCustomKeyNames"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['(?i)(deploy|server|admin|bastion|prod|staging|github|gitlab|backup)[_-]key$']
+action = "Snaffle"
+triage = "Red"
+description = "SSH private keys with custom names -- common in DevOps workflows"
+
+[[rules]]
+name = "GradleGroovyFiles"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["gradle", "groovy"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "CloudKeyPatterns", "TokenPatterns"]
+description = "Gradle and Groovy files -- may contain embedded credentials in build configs"
+
+[[rules]]
+name = "JavaPropertiesFiles"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["properties"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "ConnectionStrings"]
+description = "Java properties files -- commonly contain database and service credentials"
+
+[[rules]]
+name = "TemplateFiles"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["j2", "jinja", "jinja2", "erb", "twig"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "CloudKeyPatterns"]
+description = "Template files -- Ansible Jinja, Rails ERB, PHP Twig may embed credentials"

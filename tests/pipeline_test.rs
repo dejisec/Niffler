@@ -1,5 +1,3 @@
-// Strategy: use local_paths mode to bypass discovery's internal Nfs3Connector.
-// Walker reads local filesystem, scanner uses FileReader::Local (no NFS).
 #[path = "integration/helpers.rs"]
 mod helpers;
 
@@ -33,16 +31,14 @@ fn local_config(
 
 #[tokio::test]
 async fn pipeline_scan_mode_end_to_end() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = helpers::scan_tempdir();
 
-    // Create .env file with credential content (triggers EnvFiles → CredentialPatterns relay)
     std::fs::write(
         tmp.path().join("test.env"),
         "DB_PASSWORD=MyS3cur3P@ss\nAPI_KEY=sk1234567890abcdef1234567890abcdef\n",
     )
     .unwrap();
 
-    // Create id_rsa with SSH key content (triggers SshPrivateKeys Black rule)
     let key_content = helpers::sample_file_content("id_rsa");
     std::fs::write(tmp.path().join("id_rsa"), &key_content).unwrap();
 
@@ -105,7 +101,7 @@ async fn pipeline_recon_mode_skips_walker_and_scanner() {
 
 #[tokio::test]
 async fn pipeline_enum_mode_skips_content_read() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = helpers::scan_tempdir();
     std::fs::write(tmp.path().join("test.env"), "DB_PASSWORD=secret\n").unwrap();
     std::fs::write(tmp.path().join("config.yaml"), "password: test\n").unwrap();
 
@@ -139,7 +135,7 @@ async fn pipeline_enum_mode_skips_content_read() {
 
 #[tokio::test]
 async fn pipeline_stats_accuracy() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = helpers::scan_tempdir();
     std::fs::write(tmp.path().join("file1.txt"), "hello world").unwrap();
     std::fs::write(tmp.path().join("file2.txt"), "nothing secret").unwrap();
     std::fs::write(tmp.path().join("file3.txt"), "just text").unwrap();
@@ -171,7 +167,7 @@ async fn pipeline_stats_accuracy() {
 
 #[tokio::test]
 async fn pipeline_error_resilience() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = helpers::scan_tempdir();
 
     // A file with credential content that should produce findings
     std::fs::write(tmp.path().join("test.env"), "DB_PASSWORD=MyS3cur3P@ss\n").unwrap();
@@ -234,7 +230,7 @@ async fn pipeline_graceful_shutdown_on_cancellation() {
 async fn pipeline_channel_backpressure() {
     // Pipeline with local files exercises all channels end-to-end.
     // Default bounds (5000/50000/10000) are sufficient; verify no deadlock.
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = helpers::scan_tempdir();
     for i in 0..20 {
         std::fs::write(
             tmp.path().join(format!("file{i}.txt")),
@@ -284,7 +280,7 @@ async fn pipeline_empty_targets() {
 
 #[tokio::test]
 async fn pipeline_all_triage_levels_in_output() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = helpers::scan_tempdir();
 
     // Black: SSH private key filename match
     let key_content = helpers::sample_file_content("id_rsa");
@@ -325,7 +321,7 @@ async fn pipeline_all_triage_levels_in_output() {
 
 #[tokio::test]
 async fn pipeline_binary_file_skips_text_rules() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = helpers::scan_tempdir();
 
     // Copy binary fixture (contains null bytes + decoy credential text)
     let binary_content = helpers::sample_file_content("binary_file.bin");

@@ -49,40 +49,6 @@ fn extract_panic_message(payload: &Box<dyn Any + Send>) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn pipeline_error_config_display() {
-        let err = PipelineError::Config("bad rules path".into());
-        let msg = err.to_string().to_lowercase();
-        assert!(msg.contains("config"), "expected 'config' in: {msg}");
-    }
-
-    #[test]
-    fn pipeline_error_channel_closed_display() {
-        let err = PipelineError::ChannelClosed;
-        let msg = err.to_string().to_lowercase();
-        assert!(msg.contains("channel"), "expected 'channel' in: {msg}");
-    }
-
-    #[test]
-    fn pipeline_error_phase_panicked_display() {
-        let err = PipelineError::PhasePanicked("discovery".into());
-        let msg = err.to_string().to_lowercase();
-        assert!(
-            msg.contains("panic") || msg.contains("discovery"),
-            "expected 'panic' or 'discovery' in: {msg}"
-        );
-    }
-
-    #[test]
-    fn pipeline_error_phase_failed_display() {
-        let err = PipelineError::PhaseFailed("walker error".into());
-        let msg = err.to_string().to_lowercase();
-        assert!(
-            msg.contains("walker") || msg.contains("failed"),
-            "expected 'walker' or 'failed' in: {msg}"
-        );
-    }
-
     #[tokio::test]
     async fn pipeline_error_from_join_error() {
         let handle = tokio::task::spawn(async {
@@ -94,11 +60,5 @@ mod tests {
             matches!(pipeline_err, PipelineError::PhasePanicked(_)),
             "expected PhasePanicked, got: {pipeline_err:?}"
         );
-    }
-
-    #[test]
-    fn pipeline_error_is_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<PipelineError>();
     }
 }

@@ -8,7 +8,7 @@ use tokio::sync::Semaphore;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::classifier::{RuleEngine, Triage};
 use crate::config::settings::{NifflerConfig, OperatingMode};
@@ -222,7 +222,7 @@ pub async fn run(
                         if msg.contains("MOUNT service not registered") {
                             tracing::debug!(host = %host, error = %e, "failed to list exports after retries");
                         } else {
-                            warn!(host = %host, error = %e, "failed to list exports after retries");
+                            debug!(host = %host, error = %e, "failed to list exports after retries");
                         }
                         return;
                     }
@@ -233,7 +233,7 @@ pub async fn run(
                 let exports = match super::v4_pseudo::discover_v4_exports(&host).await {
                     Ok(exports) => exports,
                     Err(e) => {
-                        warn!(host = %host, error = %e, "NFSv4 pseudo-root discovery failed");
+                        debug!(host = %host, error = %e, "NFSv4 pseudo-root discovery failed");
                         return;
                     }
                 };
@@ -257,7 +257,7 @@ pub async fn run(
             )
             .await
             {
-                warn!(host = %host, error = %e, "error processing host exports");
+                debug!(host = %host, error = %e, "error processing host exports");
             }
         });
     }
@@ -644,8 +644,6 @@ mod tests {
         assert_eq!(stats.hosts_scanned.load(Ordering::Relaxed), 1);
         assert_eq!(stats.exports_found.load(Ordering::Relaxed), 2);
     }
-
-    // --- retry_with_backoff tests ---
 
     #[tokio::test]
     async fn retry_succeeds_after_transient_failure() {

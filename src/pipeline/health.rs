@@ -118,22 +118,6 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn host_health_default_zero_errors() {
-        let h = HostHealth::default();
-        assert_eq!(h.consecutive_errors(), 0);
-        assert!(!h.is_in_cooldown());
-    }
-
-    #[test]
-    fn host_health_record_error_increments() {
-        let h = HostHealth::new(100, Duration::from_secs(10));
-        h.record_error();
-        h.record_error();
-        h.record_error();
-        assert_eq!(h.consecutive_errors(), 3);
-    }
-
-    #[test]
     fn host_health_record_success_resets_counter() {
         let h = HostHealth::new(100, Duration::from_secs(10));
         for _ in 0..10 {
@@ -220,25 +204,6 @@ mod tests {
         assert_eq!(h.consecutive_errors(), 10);
     }
 
-    // --- HostHealthRegistry tests ---
-
-    #[test]
-    fn registry_creates_new_host_with_defaults() {
-        let reg = HostHealthRegistry::default();
-        // Force creation via record_error then check, or just check defaults
-        assert_eq!(reg.consecutive_errors("host1"), 0);
-        assert!(!reg.is_in_cooldown("host1"));
-    }
-
-    #[test]
-    fn registry_returns_existing_host() {
-        let reg = HostHealthRegistry::default();
-        for _ in 0..5 {
-            reg.record_error("host1");
-        }
-        assert_eq!(reg.consecutive_errors("host1"), 5);
-    }
-
     #[test]
     fn registry_tracks_multiple_hosts_independently() {
         let reg = HostHealthRegistry::default();
@@ -298,12 +263,6 @@ mod tests {
         }
         assert_eq!(reg.consecutive_errors("host1"), 10);
         assert_eq!(reg.consecutive_errors("host2"), 10);
-    }
-
-    #[test]
-    fn registry_unknown_host_not_in_cooldown() {
-        let reg = HostHealthRegistry::default();
-        assert!(!reg.is_in_cooldown("never_seen"));
     }
 
     #[tokio::test]

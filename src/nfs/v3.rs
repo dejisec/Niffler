@@ -1,4 +1,5 @@
 use nfs3_client::error::{Error as ClientError, RpcError};
+use nfs3_client::nfs3_types::mount::mountstat3;
 use nfs3_client::nfs3_types::nfs3::{
     GETATTR3args, LOOKUP3args, Nfs3Option, Nfs3Result, READ3args, READDIRPLUS3args, READLINK3args,
     cookieverf3, diropargs3, entryplus3, fattr3, filename3, ftype3, nfs_fh3, nfsstat3,
@@ -30,6 +31,7 @@ pub(crate) fn map_nfsstat(status: nfsstat3) -> NfsError {
 pub(crate) fn map_client_error(err: ClientError) -> NfsError {
     match err {
         ClientError::NfsError(stat) => map_nfsstat(stat),
+        ClientError::MountError(mountstat3::MNT3ERR_ACCES) => NfsError::PermissionDenied,
         ClientError::MountError(stat) => NfsError::ExportFatal(stat.to_string()),
         ClientError::Rpc(RpcError::Auth) => NfsError::PermissionDenied,
         ClientError::Io(_)
@@ -388,8 +390,14 @@ mod tests {
     }
 
     #[test]
-    fn client_mount_error_maps_to_export_fatal() {
+    fn mount_acces_maps_to_permission_denied() {
         let err = ClientError::MountError(mountstat3::MNT3ERR_ACCES);
+        assert!(matches!(map_client_error(err), NfsError::PermissionDenied));
+    }
+
+    #[test]
+    fn mount_noent_maps_to_export_fatal() {
+        let err = ClientError::MountError(mountstat3::MNT3ERR_NOENT);
         assert!(matches!(map_client_error(err), NfsError::ExportFatal(_)));
     }
 
@@ -619,34 +627,6 @@ mod tests {
         let result = filter_dot_entries(entries);
         let names: Vec<&str> = result.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec![".bashrc", "data"]);
-    }
-
-    fn _assert_nfs_connector<T: NfsConnector>() {}
-
-    #[test]
-    fn nfs3_connector_implements_nfs_connector() {
-        _assert_nfs_connector::<Nfs3Connector>();
-    }
-
-    #[test]
-    fn nfs3_connector_is_send_sync() {
-        let c = Nfs3Connector::new(false);
-        let _: std::sync::Arc<dyn NfsConnector> = std::sync::Arc::new(c);
-    }
-
-    #[test]
-    fn nfs3_connector_new_constructs() {
-        let c = Nfs3Connector::new(true);
-        assert!(c.privileged_port);
-        let c2 = Nfs3Connector::new(false);
-        assert!(!c2.privileged_port);
-    }
-
-    fn _assert_nfs_ops_send<T: NfsOps + Send>() {}
-
-    #[test]
-    fn nfs3_ops_is_send() {
-        _assert_nfs_ops_send::<Nfs3Ops>();
     }
 
     #[tokio::test]

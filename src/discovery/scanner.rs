@@ -146,7 +146,9 @@ pub async fn scan_hosts(
         "port scan complete"
     );
     if results.is_empty() && total > 0 {
-        warn!("no hosts with open NFS ports found — check network connectivity and proxy settings");
+        debug!(
+            "no hosts with open NFS ports found — check network connectivity and proxy settings"
+        );
     }
     results
 }

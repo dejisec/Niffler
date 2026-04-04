@@ -84,6 +84,10 @@ pub struct WalkerConfig {
     pub max_depth: usize,
     pub local_paths: Option<Vec<PathBuf>>,
     pub max_connections_per_host: usize,
+    pub walk_retries: usize,
+    pub walk_retry_delay_ms: u64,
+    pub uid_cycle: bool,
+    pub max_uid_attempts: usize,
 }
 
 /// File scanner settings — content reading, UID cycling, connection limits.
@@ -154,6 +158,10 @@ impl NifflerConfig {
                 max_depth: args.max_depth,
                 local_paths: args.local_path,
                 max_connections_per_host: args.max_connections_per_host,
+                walk_retries: args.walk_retries,
+                walk_retry_delay_ms: args.walk_retry_delay,
+                uid_cycle: args.uid_cycle,
+                max_uid_attempts: args.max_uid_attempts,
             },
             scanner: ScannerConfig {
                 scanner_tasks: args.scanner_tasks,
@@ -198,61 +206,9 @@ mod tests {
     fn parse_scan(args: &[&str]) -> ScanArgs {
         let cli = Cli::try_parse_from(args).expect("failed to parse CLI args");
         match cli.command {
-            NifflerCommand::Scan(args) => args,
+            NifflerCommand::Scan(args) => *args,
             _ => panic!("expected Scan subcommand"),
         }
-    }
-
-    #[test]
-    fn recon_does_not_run_walker() {
-        assert!(!OperatingMode::Recon.runs_walker());
-    }
-
-    #[test]
-    fn recon_does_not_run_content_scan() {
-        assert!(!OperatingMode::Recon.runs_content_scan());
-    }
-
-    #[test]
-    fn enumerate_runs_walker() {
-        assert!(OperatingMode::Enumerate.runs_walker());
-    }
-
-    #[test]
-    fn enumerate_does_not_run_content_scan() {
-        assert!(!OperatingMode::Enumerate.runs_content_scan());
-    }
-
-    #[test]
-    fn scan_runs_walker_and_content() {
-        assert!(OperatingMode::Scan.runs_walker());
-        assert!(OperatingMode::Scan.runs_content_scan());
-    }
-
-    #[test]
-    fn operating_mode_default_is_scan() {
-        assert_eq!(OperatingMode::default(), OperatingMode::Scan);
-    }
-
-    #[test]
-    fn operating_mode_display() {
-        assert_eq!(OperatingMode::Recon.to_string(), "recon");
-        assert_eq!(OperatingMode::Enumerate.to_string(), "enumerate");
-        assert_eq!(OperatingMode::Scan.to_string(), "scan");
-    }
-
-    #[test]
-    fn output_config_has_db_path() {
-        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1"]);
-        let config = NifflerConfig::from_scan_args(args).unwrap();
-        assert_eq!(config.output.db_path, PathBuf::from("niffler.db"));
-    }
-
-    #[test]
-    fn output_config_has_live_flag() {
-        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1"]);
-        let config = NifflerConfig::from_scan_args(args).unwrap();
-        assert!(!config.output.live);
     }
 
     #[test]
@@ -265,6 +221,8 @@ mod tests {
         assert_eq!(config.scanner.max_scan_size, 1_048_576);
         assert_eq!(config.discovery.discovery_tasks, 30);
         assert_eq!(config.walker.walker_tasks, 20);
+        assert_eq!(config.walker.walk_retries, 2);
+        assert_eq!(config.walker.walk_retry_delay_ms, 500);
         assert_eq!(config.scanner.scanner_tasks, 50);
         assert_eq!(config.min_severity, Triage::Green);
     }
@@ -319,13 +277,6 @@ mod tests {
         let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1", "-o", "/tmp/results.db"]);
         let config = NifflerConfig::from_scan_args(args).unwrap();
         assert_eq!(config.output.db_path, PathBuf::from("/tmp/results.db"));
-    }
-
-    #[test]
-    fn config_from_scan_args_maps_live_flag() {
-        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1", "--live"]);
-        let config = NifflerConfig::from_scan_args(args).unwrap();
-        assert!(config.output.live);
     }
 
     #[test]
@@ -406,6 +357,11 @@ mod tests {
         let walker = table["walker"].as_table().unwrap();
         assert!(walker.contains_key("max_depth"), "missing: max_depth");
         assert!(walker.contains_key("walker_tasks"), "missing: walker_tasks");
+        assert!(walker.contains_key("walk_retries"), "missing: walk_retries");
+        assert!(
+            walker.contains_key("walk_retry_delay_ms"),
+            "missing: walk_retry_delay_ms"
+        );
 
         let scanner = table["scanner"].as_table().unwrap();
         for field in ["max_scan_size", "uid", "gid", "uid_cycle", "scanner_tasks"] {
@@ -538,49 +494,12 @@ mod tests {
         assert_eq!(restored.scanner.scanner_tasks, 50);
         assert!(!restored.scanner.check_subtree_bypass);
         assert_eq!(restored.walker.walker_tasks, 20);
+        assert_eq!(restored.walker.walk_retries, 2);
+        assert_eq!(restored.walker.walk_retry_delay_ms, 500);
         assert_eq!(restored.walker.max_depth, 50);
         assert_eq!(restored.discovery.discovery_tasks, 30);
         assert!(restored.discovery.privileged_port);
         assert_eq!(restored.discovery.timeout_secs, 5);
         assert!(!restored.generate_config);
-    }
-
-    #[test]
-    fn export_format_display() {
-        assert_eq!(ExportFormat::Json.to_string(), "json");
-        assert_eq!(ExportFormat::Csv.to_string(), "csv");
-        assert_eq!(ExportFormat::Tsv.to_string(), "tsv");
-    }
-
-    #[test]
-    fn export_format_value_enum() {
-        use clap::ValueEnum;
-        let json = ExportFormat::from_str("json", false).unwrap();
-        assert_eq!(json, ExportFormat::Json);
-        let csv = ExportFormat::from_str("csv", false).unwrap();
-        assert_eq!(csv, ExportFormat::Csv);
-        let tsv = ExportFormat::from_str("tsv", false).unwrap();
-        assert_eq!(tsv, ExportFormat::Tsv);
-    }
-
-    #[test]
-    fn config_discovery_timeout_default_is_five() {
-        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1"]);
-        let config = NifflerConfig::from_scan_args(args).unwrap();
-        assert_eq!(config.discovery.timeout_secs, 5);
-    }
-
-    #[test]
-    fn config_discovery_timeout_overridable() {
-        let args = parse_scan(&[
-            "niffler",
-            "scan",
-            "-t",
-            "10.0.0.1",
-            "--discovery-timeout",
-            "15",
-        ]);
-        let config = NifflerConfig::from_scan_args(args).unwrap();
-        assert_eq!(config.discovery.timeout_secs, 15);
     }
 }

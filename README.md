@@ -13,26 +13,6 @@ NFS (especially v3) uses AUTH_SYS authentication, which sends UID/GID values in 
 
 Niffler automates the tedious parts: discovering exports, walking directory trees, spoofing UIDs, and pattern-matching file content against a library of credential signatures.
 
-## What It Finds
-
-Niffler ships with built-in rules that catch the things you'd actually care about on a pentest:
-
-- **SSH private keys** (`id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`) — checks if they're encrypted
-- **Cloud credentials** (AWS `credentials`, GCP service account JSON, Azure tokens)
-- **Password files** (`shadow`, `gshadow`, `master.passwd`)
-- **Vault tokens** (`.vault-token`)
-- **KeePass databases** (`.kdbx`, `.kdb`)
-- **Kubernetes configs** (`kubeconfig`, `admin.conf`)
-- **Passwords in config files** — regex patterns for `password=`, `api_key=`, `secret_key=`, bearer tokens
-- **Database connection strings** — `mysql://`, `postgres://`, `mongodb://` URIs with embedded creds
-- **Cloud API keys** — AWS access keys (`AKIA...`), Stripe live keys, GCP private key IDs
-- **Certificate private keys** — PEM-encoded private keys (RSA, EC, DSA, OPENSSH)
-- **History files** — `.bash_history`, `.mysql_history`, `.psql_history`
-- **Terraform state** — `*.tfstate` files often contain secrets in plaintext
-- **Virtual disk images** — `.vmdk`, `.qcow2`, `.vhd` (entire filesystems worth looting)
-- **Database files** — `.sqlite`, `.mdf`, `.db`
-- **NFS misconfigurations** — `no_root_squash`, `insecure` exports, `subtree_check` bypass
-
 ## Quick Start
 
 ### Install
@@ -198,7 +178,7 @@ Targets ──► Discovery ──► Tree Walker ──► File Scanner ──�
 
 **Discovery** finds NFS servers (port scan on 111/2049), queries the portmapper and MOUNT service for exports, harvests UIDs from directory listings, and checks for misconfigurations.
 
-**Tree Walker** does a recursive READDIRPLUS traversal of each export, applying directory discard rules to prune uninteresting paths early (skips `node_modules`, `.git`, `__pycache__`, etc.).
+**Tree Walker** does a recursive READDIRPLUS traversal of each export, applying directory discard rules to prune uninteresting paths early.
 
 **File Scanner** reads file content and runs it through the rule engine. If a file is permission-denied, Niffler automatically cycles through harvested UIDs (AUTH_SYS spoofing) to try accessing it as different users.
 
@@ -214,13 +194,14 @@ Each UID attempt creates a new NFS connection with fresh AUTH_SYS credentials. N
 
 Rules are defined in TOML and compiled into the binary. The engine uses a **relay-chain architecture** (borrowed from Snaffler): cheap rules gate expensive ones.
 
-For example, a file named `.env` first matches a filename rule (instant). That rule *relays* to `CredentialPatterns` and `CloudKeyPatterns`, which read the file content and apply regex patterns (expensive). This way, regex only runs on files that are likely to contain something interesting.
+For example, a file named `.env` first matches a filename rule (instant). That rule *relays* to content rules, which read the file and apply regex patterns (expensive). This way, regex only runs on files that are likely to contain something interesting.
 
 ```
 .env file found
   └─► FileEnumeration rule matches ".env" (Relay action)
-        ├─► CredentialPatterns: scans content for password=, api_key=, etc.
-        └─► CloudKeyPatterns: scans content for AKIA..., aws_secret_access_key, etc.
+        ├─► CredentialPatterns: scans for password=, api_key=, bearer tokens, etc.
+        ├─► CloudKeyPatterns: scans for AKIA..., aws_secret_access_key, etc.
+        └─► TokenPatterns: scans for Slack xox*, GitHub ghp_, JWT, etc.
 ```
 
 Rules have four scopes:
@@ -322,6 +303,8 @@ During discovery, Niffler probes each export for common NFS misconfigurations:
 | `--walker-tasks` | Max concurrent tree walk tasks (one per export) | `20` |
 | `--scanner-tasks` | Max concurrent file scan tasks | `50` |
 | `--max-depth` | Max directory depth during tree walk | `50` |
+| `--walk-retries` | Max retries per export walk on transient errors | `2` |
+| `--walk-retry-delay` | Base delay between retries (ms, scales linearly) | `500` |
 | `--max-scan-size` | Max file size to read content from (bytes) | `1048576` (1 MB) |
 
 #### Rules & Config

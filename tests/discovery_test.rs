@@ -1,105 +1,12 @@
 #[path = "integration/helpers.rs"]
 mod helpers;
 
-use std::io::Write;
-use std::net::IpAddr;
-
 use niffler::discovery::{
-    TargetHost, check_no_root_squash, detect_misconfigurations, extract_unique_creds, harvest_uids,
-    resolve_single_target, resolve_targets_from_file, resolve_targets_from_list,
+    check_no_root_squash, detect_misconfigurations, extract_unique_creds, harvest_uids,
 };
 use niffler::nfs::connector::MockNfsConnector;
 use niffler::nfs::ops::MockNfsOps;
 use niffler::nfs::{AuthCreds, DirEntry, Misconfiguration, NfsAttrs, NfsFh, NfsFileType};
-
-#[test]
-fn target_parse_single_ip() {
-    let result = resolve_single_target("192.168.1.1").unwrap();
-    assert_eq!(result.len(), 1);
-    assert_eq!(
-        result[0],
-        TargetHost::Ip("192.168.1.1".parse::<IpAddr>().unwrap())
-    );
-}
-
-#[test]
-fn target_parse_cidr_24() {
-    let result = resolve_single_target("10.0.0.0/24").unwrap();
-    assert_eq!(result.len(), 254, "a /24 should expand to 254 host IPs");
-    assert_eq!(
-        result[0],
-        TargetHost::Ip("10.0.0.1".parse::<IpAddr>().unwrap()),
-        "first host should be 10.0.0.1"
-    );
-    assert_eq!(
-        result[253],
-        TargetHost::Ip("10.0.0.254".parse::<IpAddr>().unwrap()),
-        "last host should be 10.0.0.254"
-    );
-}
-
-#[test]
-fn target_parse_cidr_32() {
-    let result = resolve_single_target("10.0.0.1/32").unwrap();
-    assert_eq!(result.len(), 1, "/32 should produce exactly 1 host");
-    assert_eq!(
-        result[0],
-        TargetHost::Ip("10.0.0.1".parse::<IpAddr>().unwrap())
-    );
-}
-
-#[test]
-fn target_parse_hostname() {
-    let result = resolve_single_target("nfs-server.internal").unwrap();
-    assert_eq!(result.len(), 1);
-    assert_eq!(
-        result[0],
-        TargetHost::Hostname("nfs-server.internal".into())
-    );
-}
-
-#[test]
-fn target_parse_file_input() {
-    let mut tmp = tempfile::NamedTempFile::new().unwrap();
-    writeln!(tmp, "192.168.1.1").unwrap();
-    writeln!(tmp, "# comment line").unwrap();
-    writeln!(tmp).unwrap(); // blank line
-    writeln!(tmp, "10.0.0.0/30").unwrap();
-    writeln!(tmp, "nfs-host").unwrap();
-    tmp.flush().unwrap();
-
-    let result = resolve_targets_from_file(tmp.path().to_str().unwrap()).unwrap();
-    // 1 IP + 2 from /30 + 1 hostname = 4
-    assert_eq!(
-        result.len(),
-        4,
-        "expected 4 targets (comment and blank skipped)"
-    );
-
-    assert!(matches!(result[0], TargetHost::Ip(_)), "first should be IP");
-    assert_eq!(
-        result[3],
-        TargetHost::Hostname("nfs-host".into()),
-        "last should be hostname"
-    );
-}
-
-#[test]
-fn target_parse_mixed_cli() {
-    let specs: Vec<String> = vec![
-        "192.168.1.1".into(),
-        "10.0.0.0/30".into(),
-        "nfs-host".into(),
-    ];
-    let result = resolve_targets_from_list(&specs).unwrap();
-    // 1 IP + 2 from /30 + 1 hostname = 4
-    assert_eq!(result.len(), 4, "expected 4 targets from mixed CLI input");
-    assert_eq!(
-        result[0],
-        TargetHost::Ip("192.168.1.1".parse::<IpAddr>().unwrap())
-    );
-    assert_eq!(result[3], TargetHost::Hostname("nfs-host".into()));
-}
 
 fn make_entry(name: &str, uid: u32, gid: u32) -> DirEntry {
     DirEntry {

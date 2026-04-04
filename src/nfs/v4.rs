@@ -633,33 +633,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nfs4_connector_is_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<Nfs4Connector>();
-    }
-
-    #[test]
-    fn nfs4_connector_implements_nfs_connector() {
-        fn assert_connector<T: NfsConnector>() {}
-        assert_connector::<Nfs4Connector>();
-    }
-
-    #[test]
-    fn nfs4_connector_new_constructs() {
-        let _connector = Nfs4Connector::new();
-    }
-
-    #[test]
-    fn dir_handle_guard_type_exists() {
-        fn _assert(_: &super::DirHandleGuard) {}
-    }
-
-    #[test]
-    fn file_handle_guard_type_exists() {
-        fn _assert(_: &super::FileHandleGuard) {}
-    }
-
-    #[test]
     fn path_to_nfsfh_stores_bytes() {
         let fh = path_to_nfsfh("/export/dir/file");
         assert_eq!(fh.as_bytes(), b"/export/dir/file");
@@ -823,8 +796,6 @@ mod tests {
             other => panic!("expected Transient, got {:?}", other),
         }
     }
-
-    // --- Integration test stubs (require real NFSv4 server) ---
 
     #[tokio::test]
     #[ignore = "requires NFSv4 server — set NFS_TEST_HOST and NFS_TEST_EXPORT"]

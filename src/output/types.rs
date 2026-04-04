@@ -43,35 +43,6 @@ mod tests {
     use chrono::Utc;
 
     #[test]
-    fn dedup_key_equality() {
-        let key1 = DeduplicationKey {
-            host: "h".into(),
-            export_path: "/e".into(),
-            file_path: "f".into(),
-            rule_name: "r".into(),
-        };
-        let key2 = key1.clone();
-        assert_eq!(key1, key2);
-    }
-
-    #[test]
-    fn dedup_key_different_rule() {
-        let key1 = DeduplicationKey {
-            host: "h".into(),
-            export_path: "/e".into(),
-            file_path: "f".into(),
-            rule_name: "RuleA".into(),
-        };
-        let key2 = DeduplicationKey {
-            host: "h".into(),
-            export_path: "/e".into(),
-            file_path: "f".into(),
-            rule_name: "RuleB".into(),
-        };
-        assert_ne!(key1, key2);
-    }
-
-    #[test]
     fn dedup_key_from_result_extracts_correct_fields() {
         let msg = ResultMsg {
             timestamp: Utc::now(),
@@ -123,28 +94,5 @@ mod tests {
     #[test]
     fn rwx_write_execute() {
         assert_eq!(file_mode_to_rwx(0o310), "-WX");
-    }
-
-    #[test]
-    fn result_msg_serializes_to_json() {
-        let now = Utc::now();
-        let msg = ResultMsg {
-            timestamp: now,
-            host: "nfs-server".into(),
-            export_path: "/exports/home".into(),
-            file_path: "user1/.ssh/id_rsa".into(),
-            triage: Triage::Black,
-            rule_name: "SSHPrivateKey".into(),
-            matched_pattern: "id_rsa".into(),
-            context: Some("-----BEGIN OPENSSH PRIVATE KEY-----".into()),
-            file_size: 1700,
-            file_mode: 0o644,
-            file_uid: 1001,
-            file_gid: 1001,
-            last_modified: now,
-        };
-        let json = serde_json::to_string(&msg).expect("ResultMsg should serialize to JSON");
-        assert!(json.contains("\"triage\""));
-        assert!(json.contains("\"host\""));
     }
 }

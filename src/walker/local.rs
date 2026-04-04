@@ -325,7 +325,10 @@ mod tests {
 
     #[tokio::test]
     async fn local_walker_discard_prunes_directory() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("niffler-test-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .unwrap();
         fs::create_dir_all(tmp.path().join("node_modules")).unwrap();
         fs::write(tmp.path().join("node_modules/package.json"), "{}").unwrap();
         fs::create_dir_all(tmp.path().join("src")).unwrap();

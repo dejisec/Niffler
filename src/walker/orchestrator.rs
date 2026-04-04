@@ -75,6 +75,10 @@ pub async fn run(
         let token = token.clone();
         let stats = Arc::clone(&stats);
         let max_depth = config.max_depth;
+        let max_retries = config.walk_retries;
+        let retry_delay_ms = config.walk_retry_delay_ms;
+        let uid_cycle = config.uid_cycle;
+        let max_uid_attempts = config.max_uid_attempts;
         let conn_pool = Arc::clone(&conn_pool);
         let health = Arc::clone(&health);
 
@@ -95,8 +99,12 @@ pub async fn run(
                 &rules,
                 &creds,
                 max_depth,
+                max_retries,
+                retry_delay_ms,
                 &token,
                 &stats,
+                uid_cycle,
+                max_uid_attempts,
             )
             .await
             {
@@ -110,12 +118,24 @@ pub async fn run(
                         stats.inc_errors_transient();
                         health.record_error(&export.host);
                     }
-                    _ => {}
+                    ErrorClass::Fatal => {
+                        stats.inc_exports_failed();
+                    }
+                    ErrorClass::PermissionDenied => {
+                        stats.inc_exports_denied();
+                        health.record_error(&export.host);
+                    }
+                    ErrorClass::NotFound => {
+                        stats.inc_exports_failed();
+                    }
                 }
-                tracing::warn!(
-                    "Error walking export {}:{}: {}",
-                    export.host,
-                    export.export_path,
+                tracing::debug!(
+                    host = %export.host,
+                    export = %export.export_path,
+                    uid = creds.uid,
+                    gid = creds.gid,
+                    error_class = %format!("{:?}", e.classify()),
+                    "{}",
                     e
                 );
             } else {
@@ -218,6 +238,10 @@ mod tests {
             max_depth: 50,
             local_paths: None,
             max_connections_per_host: 8,
+            walk_retries: 2,
+            walk_retry_delay_ms: 10,
+            uid_cycle: false,
+            max_uid_attempts: 5,
         };
         let token = CancellationToken::new();
         let stats = Arc::new(PipelineStats::default());
@@ -260,6 +284,10 @@ mod tests {
             max_depth: 50,
             local_paths: None,
             max_connections_per_host: 8,
+            walk_retries: 2,
+            walk_retry_delay_ms: 10,
+            uid_cycle: false,
+            max_uid_attempts: 5,
         };
         let token = CancellationToken::new();
         token.cancel();
@@ -328,6 +356,10 @@ mod tests {
             max_depth: 50,
             local_paths: None,
             max_connections_per_host: 8,
+            walk_retries: 0, // No retries — test orchestrator error resilience
+            walk_retry_delay_ms: 10,
+            uid_cycle: false,
+            max_uid_attempts: 5,
         };
         let token = CancellationToken::new();
         let stats = Arc::new(PipelineStats::default());
@@ -375,6 +407,10 @@ mod tests {
             max_depth: 50,
             local_paths: Some(vec![tmp.path().to_path_buf()]),
             max_connections_per_host: 8,
+            walk_retries: 2,
+            walk_retry_delay_ms: 10,
+            uid_cycle: false,
+            max_uid_attempts: 5,
         };
         let token = CancellationToken::new();
         let stats = Arc::new(PipelineStats::default());
@@ -437,6 +473,10 @@ mod tests {
             max_depth: 50,
             local_paths: None,
             max_connections_per_host: 8,
+            walk_retries: 2,
+            walk_retry_delay_ms: 10,
+            uid_cycle: false,
+            max_uid_attempts: 5,
         };
         let token = CancellationToken::new();
         let stats = Arc::new(PipelineStats::default());
@@ -503,6 +543,10 @@ mod tests {
             max_depth: 50,
             local_paths: None,
             max_connections_per_host: 2,
+            walk_retries: 2,
+            walk_retry_delay_ms: 10,
+            uid_cycle: false,
+            max_uid_attempts: 5,
         };
         let token = CancellationToken::new();
         let stats = Arc::new(PipelineStats::default());
@@ -555,6 +599,10 @@ mod tests {
             max_depth: 50,
             local_paths: None,
             max_connections_per_host: 8,
+            walk_retries: 2,
+            walk_retry_delay_ms: 10,
+            uid_cycle: false,
+            max_uid_attempts: 5,
         };
         let token = CancellationToken::new();
         let stats = Arc::new(PipelineStats::default());
@@ -581,6 +629,113 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             1,
             "connection error should be counted in stats"
+        );
+    }
+
+    #[tokio::test]
+    async fn orchestrator_increments_exports_failed_on_fatal() {
+        let (export_tx, export_rx) = mpsc::channel::<ExportMsg>(10);
+        let (file_tx, _file_rx) = mpsc::channel::<FileMsg>(100);
+
+        export_tx.send(test_export("fail-host")).await.unwrap();
+        drop(export_tx);
+
+        let mut connector = MockNfsConnector::new();
+        connector
+            .expect_connect()
+            .returning(|_, _, _| Err(Box::new(NfsError::ExportFatal("MNT3ERR_NOENT".into()))));
+        let connector: Arc<dyn NfsConnector> = Arc::new(connector);
+
+        let rules = Arc::new(RuleEngine::compile(vec![]).unwrap());
+        let config = WalkerConfig {
+            walker_tasks: 20,
+            max_depth: 50,
+            local_paths: None,
+            max_connections_per_host: 8,
+            walk_retries: 0,
+            walk_retry_delay_ms: 10,
+            uid_cycle: false,
+            max_uid_attempts: 5,
+        };
+        let token = CancellationToken::new();
+        let stats = Arc::new(PipelineStats::default());
+        let conn_pool = Arc::new(HostConnectionPool::new(config.max_connections_per_host));
+
+        run(
+            export_rx,
+            file_tx,
+            connector,
+            rules,
+            &config,
+            AuthCreds::root(),
+            token,
+            stats.clone(),
+            conn_pool,
+            Arc::new(HostHealthRegistry::default()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            stats
+                .exports_failed
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "ExportFatal should increment exports_failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn orchestrator_increments_exports_denied_on_permission() {
+        let (export_tx, export_rx) = mpsc::channel::<ExportMsg>(10);
+        let (file_tx, _file_rx) = mpsc::channel::<FileMsg>(100);
+
+        export_tx.send(test_export("fail-host")).await.unwrap();
+        drop(export_tx);
+
+        let mut connector = MockNfsConnector::new();
+        connector
+            .expect_connect()
+            .returning(|_, _, _| Err(Box::new(NfsError::PermissionDenied)));
+        let connector: Arc<dyn NfsConnector> = Arc::new(connector);
+
+        let rules = Arc::new(RuleEngine::compile(vec![]).unwrap());
+        let config = WalkerConfig {
+            walker_tasks: 20,
+            max_depth: 50,
+            local_paths: None,
+            max_connections_per_host: 8,
+            walk_retries: 0,
+            walk_retry_delay_ms: 10,
+            uid_cycle: false,
+            max_uid_attempts: 5,
+        };
+        let token = CancellationToken::new();
+        let stats = Arc::new(PipelineStats::default());
+        let conn_pool = Arc::new(HostConnectionPool::new(config.max_connections_per_host));
+        let health = Arc::new(HostHealthRegistry::default());
+
+        run(
+            export_rx,
+            file_tx,
+            connector,
+            rules,
+            &config,
+            AuthCreds::root(),
+            token,
+            stats.clone(),
+            conn_pool,
+            health.clone(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            stats
+                .exports_denied
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "PermissionDenied should increment exports_denied"
         );
     }
 }

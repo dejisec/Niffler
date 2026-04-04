@@ -13,20 +13,20 @@ name = "SuidBinaries"
 scope = "FileEnumeration"
 match_location = "FileMode"
 match_type = "Regex"
-patterns = ['^[46]']
+patterns = ['^[46][1357]']
 action = "Snaffle"
 triage = "Yellow"
-description = "SUID binaries -- potential privilege escalation vector"
+description = "SUID binaries with owner execute -- potential privilege escalation vector"
 
 [[rules]]
 name = "SgidBinaries"
 scope = "FileEnumeration"
 match_location = "FileMode"
 match_type = "Regex"
-patterns = ['^[26]']
+patterns = ['^[26][0-7][1357]']
 action = "Snaffle"
 triage = "Yellow"
-description = "SGID binaries -- potential privilege escalation vector"
+description = "SGID binaries with group execute -- potential privilege escalation vector"
 
 [[rules]]
 name = "LogFileExtensions"
@@ -59,6 +59,66 @@ triage = "Yellow"
 description = "Core dump files -- may contain in-memory credentials"
 
 [[rules]]
+name = "KerberosKeytab"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["keytab"]
+action = "Snaffle"
+triage = "Yellow"
+description = "Kerberos keytab files containing long-term keys"
+
+[[rules]]
+name = "KerberosCache"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "StartsWith"
+patterns = ["krb5cc_"]
+action = "Snaffle"
+triage = "Yellow"
+description = "Kerberos credential cache files"
+
+[[rules]]
+name = "PacketCaptures"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["pcap", "pcapng", "cap"]
+action = "Snaffle"
+triage = "Yellow"
+description = "Network packet captures -- may contain cleartext credentials"
+
+[[rules]]
+name = "RdpFiles"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["rdp"]
+action = "Snaffle"
+triage = "Yellow"
+description = "Remote Desktop configuration files"
+
+[[rules]]
+name = "MemoryDumpsYellow"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["dmp"]
+action = "Snaffle"
+triage = "Yellow"
+description = "Memory dump files -- may contain in-memory credentials"
+
+[[rules]]
+name = "SshInfoFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = ["authorized_keys", "known_hosts", "ssh_config"]
+action = "Snaffle"
+triage = "Yellow"
+description = "SSH config files -- expose hostnames, public keys, and trust relationships"
+
+[[rules]]
 name = "CronFiles"
 scope = "FileEnumeration"
 match_location = "FileName"
@@ -67,3 +127,13 @@ patterns = ["crontab", "anacrontab"]
 action = "Relay"
 relay_targets = ["CredentialPatterns"]
 description = "Cron configuration files -- may contain credentials in scheduled commands"
+
+[[rules]]
+name = "EnvTemplateFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['\.env[._](example|sample|template|dist)$']
+action = "Snaffle"
+triage = "Yellow"
+description = "Environment variable template files -- typically contain placeholder values, not real secrets"

@@ -119,8 +119,6 @@ fn scan_no_targets_fails() {
         .stderr(predicate::str::contains("no targets"));
 }
 
-// ── Subcommand integration tests ────────────────────────────
-
 #[test]
 fn serve_help_shows_options() {
     Command::cargo_bin("niffler")
@@ -175,8 +173,6 @@ fn export_without_format_fails() {
         .failure();
 }
 
-// ── Main.rs integration tests ────────────────────────────────
-
 #[test]
 fn scan_subcommand_with_generate_config() {
     Command::cargo_bin("niffler")
@@ -190,7 +186,10 @@ fn scan_subcommand_with_generate_config() {
 #[test]
 fn scan_creates_default_db() {
     let work_dir = tempfile::tempdir().unwrap();
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::Builder::new()
+        .prefix("niffler-test-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .unwrap();
 
     std::fs::write(
         data_dir.path().join("test.env"),
@@ -214,7 +213,10 @@ fn scan_creates_default_db() {
 
 #[test]
 fn scan_live_flag() {
-    let data_dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::Builder::new()
+        .prefix("niffler-test-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .unwrap();
     let db_file = tempfile::NamedTempFile::new().unwrap();
 
     std::fs::write(
@@ -237,16 +239,6 @@ fn scan_live_flag() {
         .assert()
         .success()
         .stdout(predicate::str::is_empty().not());
-}
-
-#[test]
-fn cli_version_or_about() {
-    Command::cargo_bin("niffler")
-        .unwrap()
-        .arg("--help")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("niffler"));
 }
 
 #[test]

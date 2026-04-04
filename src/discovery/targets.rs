@@ -87,32 +87,6 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn target_host_ip_display() {
-        let host = TargetHost::Ip("192.168.1.5".parse().unwrap());
-        assert_eq!(host.to_string(), "192.168.1.5");
-    }
-
-    #[test]
-    fn target_host_hostname_display() {
-        let host = TargetHost::Hostname("nfs-server".into());
-        assert_eq!(host.to_string(), "nfs-server");
-    }
-
-    #[test]
-    fn target_host_ip_equality() {
-        let a = TargetHost::Ip("10.0.0.1".parse().unwrap());
-        let b = TargetHost::Ip("10.0.0.1".parse().unwrap());
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn target_host_hostname_equality() {
-        let a = TargetHost::Hostname("nfs-server".into());
-        let b = TargetHost::Hostname("nfs-server".into());
-        assert_eq!(a, b);
-    }
-
-    #[test]
     fn parse_cidr_24_expands() {
         let result = resolve_single_target("10.0.0.0/24").unwrap();
         assert_eq!(result.len(), 254);

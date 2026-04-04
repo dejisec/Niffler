@@ -59,10 +59,23 @@ name = "KubernetesConfigs"
 scope = "FileEnumeration"
 match_location = "FileName"
 match_type = "Exact"
-patterns = ["kubeconfig", "admin.conf"]
+patterns = ["kubeconfig"]
 action = "Snaffle"
 triage = "Black"
 description = "Kubernetes cluster configuration with embedded credentials"
+
+[[rules]]
+name = "KubernetesAdminConf"
+scope = "FileEnumeration"
+match_location = "FilePath"
+match_type = "Glob"
+patterns = [
+    "**/kubernetes/admin.conf",
+    "**/.kube/admin.conf",
+]
+action = "Snaffle"
+triage = "Black"
+description = "Kubernetes admin.conf at well-known k8s paths"
 
 [[rules]]
 name = "DiskImageExtensions"
@@ -93,6 +106,79 @@ patterns = ['(?i)luks.*key', '\.keyfile$']
 action = "Snaffle"
 triage = "Black"
 description = "LUKS disk encryption key files"
+
+[[rules]]
+name = "PuttyKeys"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["ppk"]
+action = "Snaffle"
+triage = "Black"
+description = "PuTTY SSH private key files"
+
+[[rules]]
+name = "PasswordManagerExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["psafe3", "kwallet"]
+action = "Snaffle"
+triage = "Black"
+description = "Password Safe and KWallet database files"
+
+[[rules]]
+name = "NetworkDeviceConfigs"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = ["running-config", "startup-config"]
+action = "Snaffle"
+triage = "Black"
+description = "Network device running/startup configurations with credentials"
+
+[[rules]]
+name = "WindowsHashFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['(?i)^(NTDS\.DIT|SAM|SYSTEM|SECURITY)$']
+action = "Snaffle"
+triage = "Black"
+description = "Windows credential stores -- NTDS.DIT, SAM, SYSTEM, SECURITY hives"
+
+[[rules]]
+name = "MemoryDumpsBlack"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Regex"
+patterns = ['(?i)^(lsass\.dmp|MEMORY\.DMP)$']
+action = "Snaffle"
+triage = "Black"
+description = "High-value memory dumps containing credential material"
+
+[[rules]]
+name = "CyberArkPamFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [
+    "Psmapp.cred", "backup.key", "VaultEmergency.pass",
+    "CredFile", "Server.key",
+]
+action = "Snaffle"
+triage = "Black"
+description = "CyberArk PAM vault credential and key files"
+
+[[rules]]
+name = "DockerConfigPaths"
+scope = "FileEnumeration"
+match_location = "FilePath"
+match_type = "Glob"
+patterns = ["**/.docker/config.json"]
+action = "Snaffle"
+triage = "Black"
+description = "Docker registry authentication config with embedded tokens"
 
 [[rules]]
 name = "PgpGpgExtensions"

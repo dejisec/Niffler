@@ -4,9 +4,11 @@ scope = "FileEnumeration"
 match_location = "FileExtension"
 match_type = "Exact"
 patterns = [
-    "jpg", "jpeg", "png", "gif", "bmp", "svg", "ico", "webp", "tiff",
+    "jpg", "jpeg", "png", "gif", "bmp", "svg", "ico", "webp", "tiff", "tif",
+    "raw", "cr2", "nef", "arw", "heic", "avif", "jxl",
     "mp4", "mp3", "avi", "mkv", "mov", "flv", "wmv", "wav", "flac", "ogg", "webm",
     "woff", "woff2", "ttf", "eot", "otf",
+    "css", "psd", "xcf",
 ]
 action = "Discard"
 description = "Skip media files -- images, audio, video, fonts have no credential value"
@@ -19,6 +21,74 @@ match_type = "Exact"
 patterns = [
     "so", "o", "a", "pyc", "pyo", "class", "jar", "war",
     "deb", "rpm", "snap", "zwc", "elc",
+    "ko", "mo",
 ]
 action = "Discard"
 description = "Skip compiled binaries and packages -- no plaintext credentials"
+
+[[rules]]
+name = "DiscardHeaderFiles"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["h", "hpp", "hh", "hxx"]
+action = "Discard"
+description = "Skip C/C++ header files -- struct declarations and macros, no credentials"
+
+[[rules]]
+name = "DiscardLocalizationFiles"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["po"]
+action = "Discard"
+description = "Skip gettext translation source files -- translated UI strings, no secrets"
+
+[[rules]]
+name = "DiscardMinifiedFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "EndsWith"
+patterns = [".min.js", ".min.css", ".map"]
+action = "Discard"
+description = "Skip minified and source map files -- no credential value"
+
+[[rules]]
+name = "DiscardArchiveExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = [
+    "zip", "tar", "gz", "bz2", "xz", "7z", "rar",
+    "tgz", "tbz2", "zst", "lz4", "lzo", "lzma",
+    "cpio", "ar",
+]
+action = "Discard"
+description = "Skip archive and compressed files -- binary containers, cannot be content-scanned"
+
+[[rules]]
+name = "DiscardDocumentExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["pdf", "ppt", "pptx", "odt", "ods", "odp"]
+action = "Discard"
+description = "Skip binary document formats -- cannot be content-scanned as text"
+
+[[rules]]
+name = "DiscardExecutableExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["exe", "dll", "dylib", "msi", "appimage"]
+action = "Discard"
+description = "Skip executable binaries -- compiled, no plaintext secrets"
+
+[[rules]]
+name = "DiscardSerializedDataExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["pickle", "marshal", "npy", "npz", "parquet", "avro", "arrow", "feather"]
+action = "Discard"
+description = "Skip serialized and columnar data files -- binary format, no plaintext secrets"
