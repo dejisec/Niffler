@@ -39,11 +39,21 @@ triage = "Red"
 description = "GnuPG keyring directory"
 
 [[rules]]
-name = "InterestingConfigDir"
+name = "InterestingPkiDir"
 scope = "DirectoryEnumeration"
 match_location = "FileName"
 match_type = "Exact"
-patterns = [".config"]
+patterns = [".pki"]
 action = "Snaffle"
-triage = "Yellow"
-description = "User configuration directory -- may contain application secrets"
+triage = "Red"
+description = "PKI certificate and key storage directory"
+
+[[rules]]
+name = "InterestingPasswordStoreDir"
+scope = "DirectoryEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [".password-store"]
+action = "Snaffle"
+triage = "Red"
+description = "pass password manager directory"

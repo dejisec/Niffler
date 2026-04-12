@@ -10,6 +10,7 @@ use tokio::time::timeout;
 use crate::nfs::socks::tcp_connect_str;
 use crate::nfs::types::{ExportAccessOptions, NfsExport};
 
+#[must_use]
 pub fn parse_access_options(export: &NfsExport) -> ExportAccessOptions {
     ExportAccessOptions {
         allowed_hosts: export.allowed_hosts.clone(),
@@ -21,7 +22,6 @@ pub async fn list_exports(
     proxy: Option<SocketAddr>,
     timeout_secs: u64,
 ) -> Result<Vec<NfsExport>> {
-    // Query portmapper for MOUNT service port
     let pm_stream = timeout(
         Duration::from_secs(timeout_secs),
         tcp_connect_str(&format!("{host}:111"), proxy),
@@ -36,7 +36,6 @@ pub async fn list_exports(
         .await
         .context("MOUNT service not registered")?;
 
-    // Connect to MOUNT service
     let mount_stream = timeout(
         Duration::from_secs(timeout_secs),
         tcp_connect_str(&format!("{host}:{mount_port}"), proxy),

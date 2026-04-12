@@ -137,3 +137,13 @@ patterns = ['\.env[._](example|sample|template|dist)$']
 action = "Snaffle"
 triage = "Yellow"
 description = "Environment variable template files -- typically contain placeholder values, not real secrets"
+
+[[rules]]
+name = "GenericDatabaseFiles"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["db"]
+action = "Snaffle"
+triage = "Yellow"
+description = "Generic .db files -- may or may not contain sensitive data"

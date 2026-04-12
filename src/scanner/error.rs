@@ -19,6 +19,9 @@ pub enum ScannerError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("NFS operation timed out: {0}")]
+    Timeout(String),
 }
 
 impl From<SendError<ResultMsg>> for ScannerError {
@@ -37,6 +40,7 @@ impl From<Box<dyn std::error::Error + Send + Sync>> for ScannerError {
 }
 
 impl ScannerError {
+    #[must_use]
     pub fn classify(&self) -> ErrorClass {
         match self {
             Self::Nfs(e) => classify_error(e),
@@ -44,6 +48,7 @@ impl ScannerError {
             Self::ReadError(_) => ErrorClass::Transient,
             Self::ChannelClosed => ErrorClass::Fatal,
             Self::Io(_) => ErrorClass::Transient,
+            Self::Timeout(_) => ErrorClass::Transient,
         }
     }
 }

@@ -1,5 +1,5 @@
 <tr class="detail-row">
-  <td colspan="8">
+  <td colspan="10">
     <div class="detail-content">
       <div>
         <div class="detail-section-title">Match Details</div>
@@ -50,7 +50,7 @@
         </div>
         <div class="detail-field">
           <div class="detail-label">Last Modified</div>
-          <div class="detail-value">{{ finding.last_modified }}</div>
+          <div class="detail-value" title="{{ finding.last_modified }}">{{ finding.display_time() }}</div>
         </div>
       </div>
     </div>

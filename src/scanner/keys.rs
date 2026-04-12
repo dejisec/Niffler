@@ -10,6 +10,7 @@ pub struct KeyFinding {
 
 /// Check if data contains an OpenSSH private key.
 /// Returns key metadata if found, None otherwise.
+#[must_use]
 pub fn check_ssh_key(data: &[u8]) -> Option<KeyFinding> {
     let text = std::str::from_utf8(data).ok()?;
     let key = PrivateKey::from_openssh(text).ok()?;
@@ -27,12 +28,16 @@ pub fn check_ssh_key(data: &[u8]) -> Option<KeyFinding> {
 }
 
 /// Check if data contains an X.509 private key (PEM format) or DER certificate.
+#[must_use]
 pub fn check_x509_for_private_key(data: &[u8]) -> Option<KeyFinding> {
     if let Ok(text) = std::str::from_utf8(data)
         && text.contains("-----BEGIN")
         && text.contains("PRIVATE KEY")
     {
-        let is_encrypted = text.contains("ENCRYPTED");
+        // Detect encrypted private keys:
+        // - PKCS#8:  "-----BEGIN ENCRYPTED PRIVATE KEY-----"
+        // - PKCS#1:  "Proc-Type: 4,ENCRYPTED" header in PEM body
+        let is_encrypted = text.contains("ENCRYPTED") || text.contains("Proc-Type: 4,ENCRYPTED");
         return Some(KeyFinding {
             key_type: "X.509 Private Key".into(),
             is_encrypted,
@@ -40,25 +45,30 @@ pub fn check_x509_for_private_key(data: &[u8]) -> Option<KeyFinding> {
         });
     }
 
-    use x509_parser::prelude::FromDer;
-    if let Ok((_, cert)) = x509_parser::certificate::X509Certificate::from_der(data) {
-        return Some(KeyFinding {
-            key_type: format!("X.509 Certificate ({})", cert.subject),
-            is_encrypted: false,
-            bits: None,
-        });
-    }
+    // DER certificate detection intentionally omitted: public CA certificates
+    // should not be flagged as private key findings. The classifier's file-name
+    // rules already handle .der/.crt files separately.
 
     None
 }
 
 /// Check if data contains a PGP private key block (pure string matching, no pgp crate).
+///
+/// Encryption status cannot be reliably determined from the ASCII armor alone
+/// (it requires parsing the OpenPGP packet structure), so `is_encrypted` is
+/// always `false`.
+///
+/// **Triage impact:** `scan_file()` assigns Black triage for unencrypted keys
+/// and Red for encrypted ones. Since this always reports unencrypted, PGP keys
+/// always receive Black — a false escalation for encrypted PGP keys.
+/// A future improvement could use the `pgp` crate to parse packet headers.
+#[must_use]
 pub fn check_pgp_key(data: &[u8]) -> Option<KeyFinding> {
     let text = std::str::from_utf8(data).ok()?;
     if text.contains("-----BEGIN PGP PRIVATE KEY BLOCK-----") {
         return Some(KeyFinding {
             key_type: "PGP Private Key".into(),
-            is_encrypted: text.contains("ENCRYPTED"),
+            is_encrypted: false,
             bits: None,
         });
     }
@@ -66,6 +76,7 @@ pub fn check_pgp_key(data: &[u8]) -> Option<KeyFinding> {
 }
 
 /// Try all key material inspectors in priority order: SSH → X.509 → PGP.
+#[must_use]
 pub fn inspect_key_material(data: &[u8]) -> Option<KeyFinding> {
     check_ssh_key(data)
         .or_else(|| check_x509_for_private_key(data))
@@ -164,6 +175,17 @@ bQP0o+gL5aKK8cQgiIlXeDbRjqhc4+h4EF6lY=
     }
 
     #[test]
+    fn x509_pem_pkcs1_encrypted_via_proc_type() {
+        let data = b"-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,...\n\nMIIEow...\n-----END RSA PRIVATE KEY-----\n";
+        let finding =
+            check_x509_for_private_key(data).expect("should detect PKCS#1 encrypted private key");
+        assert!(
+            finding.is_encrypted,
+            "Proc-Type: 4,ENCRYPTED should be detected as encrypted"
+        );
+    }
+
+    #[test]
     fn x509_plain_text_returns_none() {
         assert!(check_x509_for_private_key(b"Just some random text").is_none());
     }
@@ -196,9 +218,14 @@ bQP0o+gL5aKK8cQgiIlXeDbRjqhc4+h4EF6lY=
     }
 
     #[test]
-    fn pgp_encrypted_detection() {
+    fn pgp_encryption_status_always_false() {
+        // PGP encryption status cannot be determined from ASCII armor alone,
+        // so is_encrypted is always false regardless of content.
         let data = b"-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\nENCRYPTED\n\nlQOYBF...\n-----END PGP PRIVATE KEY BLOCK-----\n";
-        let finding = check_pgp_key(data).expect("should detect encrypted PGP key");
-        assert!(finding.is_encrypted);
+        let finding = check_pgp_key(data).expect("should detect PGP key");
+        assert!(
+            !finding.is_encrypted,
+            "PGP encryption cannot be detected from armor, should be false"
+        );
     }
 }

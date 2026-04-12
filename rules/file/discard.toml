@@ -49,7 +49,7 @@ name = "DiscardMinifiedFiles"
 scope = "FileEnumeration"
 match_location = "FileName"
 match_type = "EndsWith"
-patterns = [".min.js", ".min.css", ".map"]
+patterns = [".min.js", ".min.css", ".js.map", ".css.map"]
 action = "Discard"
 description = "Skip minified and source map files -- no credential value"
 
@@ -92,3 +92,54 @@ match_type = "Exact"
 patterns = ["pickle", "marshal", "npy", "npz", "parquet", "avro", "arrow", "feather"]
 action = "Discard"
 description = "Skip serialized and columnar data files -- binary format, no plaintext secrets"
+
+[[rules]]
+name = "DiscardNoisyConfigFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [
+    "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+    "tsconfig.json", "tslint.json", "eslint.config.json",
+    "Cargo.toml", "Cargo.lock",
+    "go.sum", "go.mod",
+    "composer.json", "composer.lock",
+    "Gemfile.lock", "Pipfile.lock", "poetry.lock",
+    "flake.lock", "flake.nix",
+    "renovate.json", "dependabot.yml",
+    "babel.config.json", "jest.config.json", "webpack.config.json",
+    "lerna.json", "rush.json", "nx.json", "turbo.json",
+    ".prettierrc.json", ".stylelintrc.json",
+]
+action = "Discard"
+description = "Package manifests and build tool configs that never contain secrets"
+
+[[rules]]
+name = "DiscardOracleProductExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = [
+    "trc",      # DB trace files
+    "trm",      # Trace metadata
+    "bsq",      # Binary SQL catalog
+    "plb",      # PL/SQL wrapped
+    "sbs",      # Oracle substitution files
+    "dbl",      # Oracle binary format
+    "xsl",      # XSLT templates (APEX / Oracle reports)
+]
+action = "Discard"
+description = "Oracle-specific binary, trace, and template formats with no credential value (.msg and .mk removed -- scoped at directory level instead)"
+
+[[rules]]
+name = "DiscardDocFormatExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = [
+    "pod",                                         # Perl POD source
+    "1", "2", "3", "4", "5", "6", "7", "8", "9",   # Unix man page sources
+    "tex",                                         # LaTeX source
+]
+action = "Discard"
+description = "Documentation source formats -- man pages, POD, LaTeX -- no credential value"

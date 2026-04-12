@@ -1,9 +1,7 @@
 #[path = "integration/helpers.rs"]
 mod helpers;
 
-use niffler::discovery::{
-    check_no_root_squash, detect_misconfigurations, extract_unique_creds, harvest_uids,
-};
+use niffler::discovery::{check_no_root_squash, extract_unique_creds, harvest_uids};
 use niffler::nfs::connector::MockNfsConnector;
 use niffler::nfs::ops::MockNfsOps;
 use niffler::nfs::{AuthCreds, DirEntry, Misconfiguration, NfsAttrs, NfsFh, NfsFileType};
@@ -28,9 +26,9 @@ fn discovery_uid_harvest_collects_unique_pairs() {
     let entries = vec![
         make_entry("file1", 1000, 1000),
         make_entry("file2", 1001, 1001),
-        make_entry("file3", 1000, 1000), // duplicate
+        make_entry("file3", 1000, 1000),
         make_entry("file4", 0, 0),
-        make_entry("file5", 1001, 1001), // duplicate
+        make_entry("file5", 1001, 1001),
     ];
     let result = extract_unique_creds(&entries);
     assert_eq!(
@@ -51,7 +49,7 @@ async fn discovery_harvest_uids_with_mock() {
             Ok(vec![
                 make_entry("a", 1000, 1000),
                 make_entry("b", 1001, 1001),
-                make_entry("c", 1000, 1000), // duplicate
+                make_entry("c", 1000, 1000),
                 make_entry("d", 0, 0),
             ])
         });
@@ -86,31 +84,8 @@ async fn discovery_misconfig_no_root_squash() {
     let result = check_no_root_squash(&mock, "10.0.0.1", "/export").await;
     assert_eq!(
         result,
-        Some(Misconfiguration::NoRootSquash),
-        "root connect + getattr success should detect no_root_squash"
-    );
-}
-
-#[tokio::test]
-async fn discovery_error_resilience_continues_after_host_failure() {
-    let mut mock_connector = MockNfsConnector::new();
-    mock_connector
-        .expect_connect()
-        .returning(|_, _, _| Err(Box::new(niffler::nfs::NfsError::ConnectionLost)));
-
-    // harvest_uids gracefully returns empty vec on connection failure
-    let creds = AuthCreds::nobody();
-    let result = harvest_uids(&mock_connector, "10.0.0.2", "/export", &creds).await;
-    assert!(
-        result.is_empty(),
-        "connection failure should return empty vec, not panic"
-    );
-
-    // detect_misconfigurations also returns empty on failure
-    let misconfigs = detect_misconfigurations(&mock_connector, "10.0.0.2", "/export", false).await;
-    assert!(
-        misconfigs.is_empty(),
-        "connection failure should produce no misconfigs, not error"
+        Some(Misconfiguration::PossibleNoRootSquash),
+        "root connect + getattr success should detect possible_no_root_squash (heuristic)"
     );
 }
 

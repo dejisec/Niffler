@@ -8,7 +8,7 @@ use crate::classifier::Triage;
 use crate::nfs::{AuthCreds, ExportAccessOptions, Misconfiguration, NfsAttrs, NfsFh, NfsVersion};
 
 /// Discovery → Walker: one discovered NFS export to walk.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExportMsg {
     pub host: String,
     pub export_path: String,
@@ -72,7 +72,11 @@ pub const DEFAULT_FILE_CHANNEL_BOUND: usize = 50000;
 pub const DEFAULT_RESULT_CHANNEL_BOUND: usize = 10000;
 
 impl PipelineChannels {
+    #[must_use]
     pub fn new(export_bound: usize, file_bound: usize, result_bound: usize) -> Self {
+        let export_bound = export_bound.max(1);
+        let file_bound = file_bound.max(1);
+        let result_bound = result_bound.max(1);
         let (export_tx, export_rx) = tokio::sync::mpsc::channel(export_bound);
         let (file_tx, file_rx) = tokio::sync::mpsc::channel(file_bound);
         let (result_tx, result_rx) = tokio::sync::mpsc::channel(result_bound);
@@ -120,22 +124,18 @@ mod tests {
     async fn bounded_channel_rejects_when_full() {
         let mut channels = PipelineChannels::new(2, 2, 2);
 
-        // Fill the channel to capacity.
         channels.export_tx.try_send(make_export_msg("h1")).unwrap();
         channels.export_tx.try_send(make_export_msg("h2")).unwrap();
 
-        // Third send should be rejected — channel is full.
         let err = channels
             .export_tx
             .try_send(make_export_msg("h3"))
             .unwrap_err();
         assert!(matches!(err, TrySendError::Full(_)));
 
-        // Drain one slot.
         let received = channels.export_rx.recv().await.unwrap();
         assert_eq!(received.host, "h1");
 
-        // Now there's room again.
         channels.export_tx.try_send(make_export_msg("h3")).unwrap();
     }
 

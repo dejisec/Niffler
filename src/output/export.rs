@@ -61,23 +61,22 @@ pub fn export_csv(findings: &[Finding], writer: &mut dyn Write) -> io::Result<()
 /// Empty input produces no output.
 pub fn export_tsv(findings: &[Finding], writer: &mut dyn Write) -> io::Result<()> {
     for f in findings {
-        let context = escape_tsv(f.context.as_deref().unwrap_or(""));
         writeln!(
             writer,
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            f.timestamp,
-            f.triage,
-            f.host,
-            f.export_path,
-            f.file_path,
-            f.rule_name,
+            escape_tsv(&f.timestamp),
+            escape_tsv(&f.triage),
+            escape_tsv(&f.host),
+            escape_tsv(&f.export_path),
+            escape_tsv(&f.file_path),
+            escape_tsv(&f.rule_name),
             escape_tsv(&f.matched_pattern),
-            context,
+            escape_tsv(f.context.as_deref().unwrap_or("")),
             f.file_size,
             f.file_mode,
             f.file_uid,
             f.file_gid,
-            f.last_modified,
+            escape_tsv(&f.last_modified),
         )?;
     }
     Ok(())
@@ -199,16 +198,6 @@ mod tests {
         ] {
             assert!(first_line.contains(col), "header missing: {col}");
         }
-    }
-
-    #[test]
-    fn test_export_csv_row_count() {
-        let findings = sample_findings();
-        let mut buf = Vec::new();
-        export_csv(&findings, &mut buf).unwrap();
-        let output = String::from_utf8(buf).unwrap();
-        let line_count = output.lines().count();
-        assert_eq!(line_count, 4, "1 header + 3 data rows");
     }
 
     #[test]

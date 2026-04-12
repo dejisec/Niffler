@@ -8,12 +8,10 @@
 {% else %}
 {% for h in hosts %}
 <div class="host-group">
-    <div class="host-group-header"
-         hx-get="/api/hosts/{{ h.host }}/exports"
-         hx-target="next .host-exports"
-         hx-swap="innerHTML">
+    <div class="host-group-header" data-host="{{ h.host }}" onclick="toggleHost(this)">
+        <span class="host-chevron">&#9656;</span>
         <span class="host-group-name">{{ h.host }}</span>
-        <span class="host-group-count">{{ h.count }} findings</span>
+        <span class="host-group-count">{{ h.count }} finding{% if h.count != 1 %}s{% endif %}</span>
     </div>
     <div class="host-exports"></div>
 </div>

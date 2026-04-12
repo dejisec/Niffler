@@ -14,10 +14,10 @@ pub enum Triage {
 impl fmt::Display for Triage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Triage::Green => write!(f, "Green"),
-            Triage::Yellow => write!(f, "Yellow"),
-            Triage::Red => write!(f, "Red"),
-            Triage::Black => write!(f, "Black"),
+            Self::Green => write!(f, "Green"),
+            Self::Yellow => write!(f, "Yellow"),
+            Self::Red => write!(f, "Red"),
+            Self::Black => write!(f, "Black"),
         }
     }
 }

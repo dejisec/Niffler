@@ -1,15 +1,17 @@
 {% if findings.is_empty() %}
-<tr><td colspan="8" class="empty-state">No findings match your filters</td></tr>
+<tr><td colspan="10" class="empty-state">No findings match your filters</td></tr>
 {% else %}
 {% for f in findings %}
 <tr class="findings-row" data-severity="{{ f.triage|lower }}">
     <td><button class="expand-toggle" onclick="toggleDetail(this,{{ f.id }})">&#9656;</button></td>
     <td><span class="badge badge-{{ f.triage|lower }}">{{ f.triage }}</span></td>
     <td>{{ f.rule_name }}</td>
+    <td class="cell-pattern mono" title="{{ f.matched_pattern }}">{{ f.matched_pattern }}</td>
     <td class="mono">{{ f.host }}</td>
-    <td class="cell-path" title="{{ f.file_path }}">{{ f.file_path }}{% if let Some(ctx) = f.context %}<div class="cell-context" title="{{ ctx }}">{{ ctx }}</div>{% endif %}</td>
+    <td class="cell-path" title="{{ f.file_path }}">{{ f.file_path }}</td>
+    <td class="cell-context" title="{{ f.context.as_deref().unwrap_or("") }}">{{ f.display_context_preview() }}</td>
     <td class="cell-size">{{ f.display_size() }}</td>
-    <td class="cell-time">{{ f.last_modified }}</td>
+    <td class="cell-date" title="{{ f.last_modified }}">{{ f.display_date() }}</td>
     <td>
         <button class="star-btn{% if f.starred %} starred{% endif %}"
             hx-post="/api/findings/{{ f.id }}/star" hx-swap="outerHTML">{% if f.starred %}&#9733;{% else %}&#9734;{% endif %}</button>
@@ -17,7 +19,7 @@
             hx-post="/api/findings/{{ f.id }}/review" hx-swap="outerHTML">{% if f.reviewed %}&#9745;{% else %}&#9744;{% endif %}</button>
     </td>
 </tr>
-<tr class="detail-row" style="display:none"><td colspan="8"></td></tr>
+<tr class="detail-row" style="display:none"><td colspan="10"></td></tr>
 {% endfor %}
 {% endif %}
 <div id="findings-pagination" hx-swap-oob="true" class="pagination">
@@ -37,3 +39,23 @@
     <button class="pagination-btn" disabled>Next &rarr;</button>
     {% endif %}
 </div>
+{% if is_fragment %}
+<select id="host-select" name="host" class="filter-select"
+    hx-get="/api/findings" hx-trigger="change" hx-target="#findings-tbody"
+    hx-swap="innerHTML" hx-include="#findings-form"
+    hx-swap-oob="true">
+    <option value="">All Hosts</option>
+    {% for h in hosts %}
+    <option value="{{ h }}"{% if current_host.as_str() == h.as_str() %} selected{% endif %}>{{ h }}</option>
+    {% endfor %}
+</select>
+<select id="rule-select" name="rule" class="filter-select"
+    hx-get="/api/findings" hx-trigger="change" hx-target="#findings-tbody"
+    hx-swap="innerHTML" hx-include="#findings-form"
+    hx-swap-oob="true">
+    <option value="">All Rules</option>
+    {% for r in rules %}
+    <option value="{{ r }}"{% if current_rule.as_str() == r.as_str() %} selected{% endif %}>{{ r }}</option>
+    {% endfor %}
+</select>
+{% endif %}

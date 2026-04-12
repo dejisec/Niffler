@@ -39,6 +39,7 @@ pub struct FindingsTemplate {
     pub showing_end: u64,
     pub hosts: Vec<String>,
     pub rules: Vec<String>,
+    pub is_fragment: bool,
     pub current_triage: String,
     pub current_host: String,
     pub current_rule: String,
@@ -58,6 +59,9 @@ pub struct FindingsRowsTemplate {
     pub total_pages: u64,
     pub showing_start: u64,
     pub showing_end: u64,
+    pub hosts: Vec<String>,
+    pub rules: Vec<String>,
+    pub is_fragment: bool,
     pub current_triage: String,
     pub current_host: String,
     pub current_rule: String,
@@ -116,6 +120,7 @@ pub struct ReviewButtonTemplate {
 }
 
 /// Convert a Unix file mode integer to rwx string (e.g., 0o644 → "rw-r--r--").
+#[must_use]
 pub fn format_mode(mode: i64) -> String {
     let m = mode as u32;
     let mut s = String::with_capacity(9);

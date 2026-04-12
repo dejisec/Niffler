@@ -19,6 +19,35 @@ fn should_discard_entry(rules: &RuleEngine, entry: &walkdir::DirEntry) -> bool {
     rules.should_discard_dir(&name, &path)
 }
 
+/// Thin wrapper that lets us send `&RuleEngine` and `&PipelineStats` references
+/// into `spawn_blocking`.
+///
+/// # Safety
+/// Both `RuleEngine` and `PipelineStats` are `Sync` (the former is read-only after
+/// compilation; the latter uses only atomic counters). The caller MUST `.await` the
+/// `spawn_blocking` handle before the references expire, which `walk_local_paths` does.
+struct BlockingCtx {
+    rules: *const RuleEngine,
+    stats: *const PipelineStats,
+}
+
+// SAFETY: RuleEngine and PipelineStats are both Sync. The pointers are only
+// dereferenced inside the spawn_blocking closure, which is awaited in the same
+// scope that holds the references alive.
+unsafe impl Send for BlockingCtx {}
+
+impl BlockingCtx {
+    fn rules(&self) -> &RuleEngine {
+        // SAFETY: pointer is valid for the lifetime of spawn_blocking (see above).
+        unsafe { &*self.rules }
+    }
+
+    fn stats(&self) -> &PipelineStats {
+        // SAFETY: pointer is valid for the lifetime of spawn_blocking (see above).
+        unsafe { &*self.stats }
+    }
+}
+
 pub(crate) async fn walk_local_paths(
     paths: Vec<PathBuf>,
     file_tx: &mpsc::Sender<FileMsg>,
@@ -27,52 +56,87 @@ pub(crate) async fn walk_local_paths(
     token: &CancellationToken,
     stats: &PipelineStats,
 ) -> Result<(), WalkerError> {
-    for base_path in &paths {
-        let walker = WalkDir::new(base_path)
-            .follow_links(false)
-            .max_depth(max_depth);
+    let sender = file_tx.clone();
+    let token = token.clone();
+    let ctx = BlockingCtx {
+        rules: rules as *const RuleEngine,
+        stats: stats as *const PipelineStats,
+    };
 
-        for entry in walker
-            .into_iter()
-            .filter_entry(|e| !should_discard_entry(rules, e))
-        {
-            if token.is_cancelled() {
-                break;
+    tokio::task::spawn_blocking(move || {
+        let rules = ctx.rules();
+        let stats = ctx.stats();
+
+        for base_path in &paths {
+            let walker = WalkDir::new(base_path)
+                .follow_links(false)
+                .max_depth(max_depth);
+
+            for entry in walker
+                .into_iter()
+                .filter_entry(|e| !should_discard_entry(rules, e))
+            {
+                if token.is_cancelled() {
+                    break;
+                }
+
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(e) => {
+                        tracing::debug!("Skipping entry: {}", e);
+                        continue;
+                    }
+                };
+
+                if entry.file_type().is_dir() {
+                    stats.inc_dirs_walked();
+                    continue;
+                }
+
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+
+                let metadata = match entry.metadata() {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::debug!("Skipping {}: {}", entry.path().display(), e);
+                        continue;
+                    }
+                };
+                let file_path = entry
+                    .path()
+                    .strip_prefix(base_path)
+                    .unwrap_or(entry.path())
+                    .to_string_lossy()
+                    .into_owned();
+                let full_path = entry.into_path();
+
+                if sender
+                    .blocking_send(FileMsg {
+                        host: "local".to_string(),
+                        export_path: base_path.display().to_string(),
+                        file_path,
+                        file_handle: NfsFh::default(),
+                        attrs: NfsAttrs::from_metadata(&metadata),
+                        reader: FileReader::Local {
+                            path: full_path.clone(),
+                        },
+                        harvested_uids: vec![],
+                    })
+                    .is_err()
+                {
+                    // Channel closed — receiver dropped.
+                    return Err(WalkerError::ChannelClosed);
+                }
+                stats.inc_files_discovered();
             }
-
-            let entry = entry.map_err(|e| WalkerError::Io(e.into()))?;
-
-            if !entry.file_type().is_file() {
-                continue;
-            }
-
-            let metadata = entry.metadata().map_err(|e| WalkerError::Io(e.into()))?;
-            let file_path = entry
-                .path()
-                .strip_prefix(base_path)
-                .unwrap_or(entry.path())
-                .to_string_lossy()
-                .into_owned();
-            let full_path = entry.into_path();
-
-            file_tx
-                .send(FileMsg {
-                    host: "local".to_string(),
-                    export_path: base_path.display().to_string(),
-                    file_path,
-                    file_handle: NfsFh::default(),
-                    attrs: NfsAttrs::from_metadata(&metadata),
-                    reader: FileReader::Local {
-                        path: full_path.clone(),
-                    },
-                    harvested_uids: vec![],
-                })
-                .await?;
-            stats.inc_files_discovered();
         }
-    }
 
-    Ok(())
+        Ok(())
+    })
+    .await
+    .map_err(|e| WalkerError::Io(std::io::Error::other(e.to_string())))?
 }
 
 #[cfg(test)]
@@ -449,9 +513,77 @@ mod tests {
 
         let export_a = tmp_a.path().display().to_string();
         let export_b = tmp_b.path().display().to_string();
-        let from_a: Vec<_> = items.iter().filter(|m| m.export_path == export_a).collect();
-        let from_b: Vec<_> = items.iter().filter(|m| m.export_path == export_b).collect();
-        assert_eq!(from_a.len(), 2);
-        assert_eq!(from_b.len(), 2);
+        assert_eq!(
+            items.iter().filter(|m| m.export_path == export_a).count(),
+            2
+        );
+        assert_eq!(
+            items.iter().filter(|m| m.export_path == export_b).count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn local_walker_continues_on_io_error() {
+        // Bug 5.1 regression test: IO errors on individual entries should not
+        // abort the entire walk. We can't easily inject walkdir errors, but we
+        // verify that creating a permission-denied directory doesn't crash.
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("good.txt"), "data").unwrap();
+
+        let (tx, mut rx) = mpsc::channel::<FileMsg>(100);
+        let rules = empty_rules();
+        let token = CancellationToken::new();
+        let stats = PipelineStats::default();
+
+        let result = walk_local_paths(
+            vec![tmp.path().to_path_buf()],
+            &tx,
+            &rules,
+            50,
+            &token,
+            &stats,
+        )
+        .await;
+        assert!(result.is_ok());
+
+        drop(tx);
+        let mut items = Vec::new();
+        while let Some(msg) = rx.recv().await {
+            items.push(msg);
+        }
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].file_path, "good.txt");
+    }
+
+    #[tokio::test]
+    async fn local_walker_increments_dirs_walked() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("dir_a")).unwrap();
+        fs::create_dir_all(tmp.path().join("dir_b")).unwrap();
+        fs::write(tmp.path().join("dir_a/file.txt"), "data").unwrap();
+
+        let (tx, _rx) = mpsc::channel::<FileMsg>(100);
+        let rules = empty_rules();
+        let token = CancellationToken::new();
+        let stats = PipelineStats::default();
+
+        walk_local_paths(
+            vec![tmp.path().to_path_buf()],
+            &tx,
+            &rules,
+            50,
+            &token,
+            &stats,
+        )
+        .await
+        .unwrap();
+
+        // root dir + dir_a + dir_b = 3 directories
+        assert!(
+            stats.dirs_walked.load(Ordering::Relaxed) >= 3,
+            "expected at least 3 dirs walked, got {}",
+            stats.dirs_walked.load(Ordering::Relaxed)
+        );
     }
 }

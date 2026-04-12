@@ -5,7 +5,7 @@
 <div class="export-item">
     <span class="export-path">{{ e.export_path }}</span>
     <span class="export-bar" style="width: {{ e.bar_pct }}%"></span>
-    <span class="export-count">{{ e.count }} findings</span>
+    <span class="export-count">{{ e.count }} finding{% if e.count != 1 %}s{% endif %}</span>
 </div>
 {% for f in e.findings %}
 <div class="export-item" style="padding-left: 2rem;">

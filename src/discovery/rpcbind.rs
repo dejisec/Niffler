@@ -32,17 +32,13 @@ pub async fn query_rpc_services(
 
     let mut nfs_versions = Vec::new();
 
-    // Check NFSv3 (program 100003, version 3)
     if pm.getport(100_003, 3).await.is_ok() {
         nfs_versions.push(3);
     }
-
-    // Check NFSv4 (program 100003, version 4)
     if pm.getport(100_003, 4).await.is_ok() {
         nfs_versions.push(4);
     }
 
-    // Check MOUNT service (program 100005, version 3)
     let mount_available = pm.getport(100_005, 3).await.is_ok();
 
     Ok(RpcServices {

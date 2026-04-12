@@ -26,9 +26,9 @@
             <td>{{ s.id }}</td>
             <td><span class="scan-status status-{{ s.status }}">{{ s.status }}</span></td>
             <td>{{ s.mode }}</td>
-            <td class="mono">{{ s.targets }}</td>
-            <td class="text-dim">{{ s.started_at }}</td>
-            <td class="text-dim">{% match s.completed_at %}{% when Some with (t) %}{{ t }}{% when None %}—{% endmatch %}</td>
+            <td class="mono">{{ s.display_targets() }}</td>
+            <td class="text-dim" title="{{ s.started_at }}">{{ s.display_started() }}</td>
+            <td class="text-dim">{{ s.display_completed() }}</td>
             <td>{{ s.total_hosts }}</td>
             <td>{{ s.total_exports }}</td>
             <td><a class="scan-link" href="/findings?scan_id={{ s.id }}">{{ s.total_findings }}</a></td>

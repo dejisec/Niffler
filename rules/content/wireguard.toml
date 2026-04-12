@@ -1,0 +1,11 @@
+[[rules]]
+name = "WireguardPrivateKey"
+scope = "ContentsEnumeration"
+match_location = "FileContentAsString"
+match_type = "Regex"
+patterns = ['(?i)PrivateKey\s*=\s*[A-Za-z0-9+/]{43}=']
+action = "Snaffle"
+triage = "Black"
+max_size = 1048576
+context_bytes = 200
+description = "Wireguard private key"

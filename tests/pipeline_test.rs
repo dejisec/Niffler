@@ -210,7 +210,6 @@ async fn pipeline_error_resilience() {
 async fn pipeline_graceful_shutdown_on_cancellation() {
     let config = helpers::test_config(OperatingMode::Scan);
     let token = CancellationToken::new();
-    // Pre-cancel: pipeline should exit immediately
     token.cancel();
 
     let result = tokio::time::timeout(

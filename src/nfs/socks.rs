@@ -19,8 +19,10 @@ impl Connector for SocksConnector {
     async fn connect(&self, addr: SocketAddr) -> std::io::Result<Self::Connection> {
         let stream = Socks5Stream::connect(self.proxy_addr, addr)
             .await
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e))?;
-        Ok(TokioIo::new(stream.into_inner()))
+            .map_err(|e| std::io::Error::other(format!("SOCKS5 proxy: {e}")))?;
+        let inner = stream.into_inner();
+        super::transport::configure_stream(&inner)?;
+        Ok(TokioIo::new(inner))
     }
 
     async fn connect_with_port(
@@ -41,24 +43,32 @@ pub async fn tcp_connect(
     if let Some(proxy_addr) = proxy {
         let stream = Socks5Stream::connect(proxy_addr, addr)
             .await
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e))?;
-        Ok(stream.into_inner())
+            .map_err(|e| std::io::Error::other(format!("SOCKS5 proxy: {e}")))?;
+        let inner = stream.into_inner();
+        super::transport::configure_stream(&inner)?;
+        Ok(inner)
     } else {
-        TcpStream::connect(addr).await
+        let stream = TcpStream::connect(addr).await?;
+        super::transport::configure_stream(&stream)?;
+        Ok(stream)
     }
 }
 
 /// Resolve a host:port string and connect, optionally through SOCKS5.
 pub async fn tcp_connect_str(addr: &str, proxy: Option<SocketAddr>) -> std::io::Result<TcpStream> {
     if let Some(proxy_addr) = proxy {
-        let target: SocketAddr = tokio::net::lookup_host(addr).await?.next().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "no addresses resolved")
-        })?;
-        let stream = Socks5Stream::connect(proxy_addr, target)
+        // Pass the hostname string directly to the SOCKS5 proxy for remote DNS
+        // resolution. Local resolution would defeat the proxy for internal
+        // hostnames only resolvable within the proxy's network.
+        let stream = Socks5Stream::connect(proxy_addr, addr)
             .await
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e))?;
-        Ok(stream.into_inner())
+            .map_err(|e| std::io::Error::other(format!("SOCKS5 proxy: {e}")))?;
+        let inner = stream.into_inner();
+        super::transport::configure_stream(&inner)?;
+        Ok(inner)
     } else {
-        TcpStream::connect(addr).await
+        let stream = TcpStream::connect(addr).await?;
+        super::transport::configure_stream(&stream)?;
+        Ok(stream)
     }
 }

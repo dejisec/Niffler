@@ -170,17 +170,20 @@ Niffler runs as a multi-phase async pipeline:
 Targets ──► Discovery ──► Tree Walker ──► File Scanner ──► Output
               │                │                │
          find servers     walk exports     read content
-         list exports     prune junk dirs  match filenames
-         harvest UIDs                      match patterns
-         detect misconfig                  check for keys
+         list exports     parallel dirs    match filenames
+         harvest UIDs     prune junk dirs  match patterns
+         detect misconfig retry on loss    check for keys
                                            UID cycling
+                                           retry on loss
 ```
 
 **Discovery** finds NFS servers (port scan on 111/2049), queries the portmapper and MOUNT service for exports, harvests UIDs from directory listings, and checks for misconfigurations.
 
-**Tree Walker** does a recursive READDIRPLUS traversal of each export, applying directory discard rules to prune uninteresting paths early.
+**Tree Walker** does a parallel recursive READDIRPLUS traversal of each export (`--parallel-dirs` concurrent directory listings), applying directory discard rules to prune uninteresting paths early.
 
-**File Scanner** reads file content and runs it through the rule engine. If a file is permission-denied, Niffler automatically cycles through harvested UIDs (AUTH_SYS spoofing) to try accessing it as different users.
+**File Scanner** reads file content and runs it through the rule engine using a connection pool (`--max-connections-per-host`). If a file is permission-denied, Niffler automatically cycles through harvested UIDs (AUTH_SYS spoofing) to try accessing it as different users. Failed reads are retried with exponential backoff (`--scan-retries`).
+
+**Circuit Breaker** monitors error rates per host. If a server's error rate exceeds 80% within a sliding window (after at least `--error-threshold` events), the host is temporarily suspended for `--cooldown-secs` to avoid hammering unhealthy servers.
 
 **UID Cycling** is the secret sauce. When the scanner hits a permission wall, it tries:
 
@@ -189,6 +192,16 @@ Targets ──► Discovery ──► Tree Walker ──► File Scanner ──�
 3. UIDs harvested during discovery (from directory listings)
 
 Each UID attempt creates a new NFS connection with fresh AUTH_SYS credentials. NFS file handles are cross-connection valid, so a handle obtained by the walker can be read by the scanner using a completely different UID.
+
+### NFSv4
+
+Niffler supports NFSv4 via [libnfs](https://github.com/sahlberg/libnfs). Force it with `--nfs-version 4`:
+
+```bash
+./niffler scan -t 10.0.0.5 --nfs-version 4
+```
+
+When no version is specified, Niffler defaults to NFSv3. NFSv4 is useful when the target only exposes v4, or when you want to test v4-specific behaviors.
 
 ## Rule Engine
 
@@ -287,10 +300,10 @@ During discovery, Niffler probes each export for common NFS misconfigurations:
 |------|-------------|---------|
 | `--uid` | UID for AUTH_SYS credentials | `65534` (nobody) |
 | `--gid` | GID for AUTH_SYS credentials | `65534` (nobody) |
-| `--uid-cycle` | Auto-cycle through harvested UIDs on permission denied | `true` |
+| `--no-uid-cycle` | Disable auto-cycling through harvested UIDs on permission denied | `false` |
 | `--max-uid-attempts` | Max UID attempts per file before giving up | `5` |
-| `--nfs-version` | Force NFS version (auto-detect if not set) | — |
-| `--privileged-port` | Bind source port < 1024  | `true` |
+| `--nfs-version` | Force NFS version: `3` or `4` (auto-detect if not set) | — |
+| `--no-privileged-port` | Disable binding source port < 1024 | `false` |
 | `--proxy` | SOCKS5 proxy URL (e.g., `socks5://127.0.0.1:1080`) | — |
 
 #### Concurrency & Limits
@@ -299,13 +312,22 @@ During discovery, Niffler probes each export for common NFS misconfigurations:
 |------|-------------|---------|
 | `--max-connections-per-host` | Max concurrent NFS connections per server | `8` |
 | `--discovery-tasks` | Max concurrent discovery tasks | `30` |
-| `--discovery-timeout` | Timeout in seconds for network operations | `5` |
+| `--discovery-timeout` | Timeout in seconds for discovery network operations | `5` |
 | `--walker-tasks` | Max concurrent tree walk tasks (one per export) | `20` |
 | `--scanner-tasks` | Max concurrent file scan tasks | `50` |
 | `--max-depth` | Max directory depth during tree walk | `50` |
-| `--walk-retries` | Max retries per export walk on transient errors | `2` |
-| `--walk-retry-delay` | Base delay between retries (ms, scales linearly) | `500` |
+| `--parallel-dirs` | Max concurrent directory listings per export during tree walk | `8` |
+| `--walk-retries` | Max retries per export walk on connection loss (0 = no retry) | `2` |
+| `--walk-retry-delay` | Base delay between walk retries (ms, exponential backoff with jitter) | `500` |
+| `--scan-retries` | Max retries per file scan on connection loss (0 = no retry) | `2` |
+| `--scan-retry-delay` | Base delay between scanner retries (ms, exponential backoff with jitter) | `200` |
+| `--connect-timeout` | Timeout in seconds for establishing NFS connections | `10` |
+| `--nfs-timeout` | Timeout in seconds for individual NFS operations (read, readdirplus) | `30` |
+| `--task-timeout` | Timeout in seconds for entire scanner task | `300` |
 | `--max-scan-size` | Max file size to read content from (bytes) | `1048576` (1 MB) |
+| `--read-chunk-size` | NFS read chunk size in bytes | `1048576` (1 MB) |
+| `--error-threshold` | Min events in health window before circuit breaker evaluates error rate | `10` |
+| `--cooldown-secs` | Cooldown duration in seconds after circuit breaker trips | `60` |
 
 #### Rules & Config
 

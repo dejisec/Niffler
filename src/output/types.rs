@@ -13,6 +13,7 @@ pub struct DeduplicationKey {
 }
 
 impl DeduplicationKey {
+    #[must_use]
     pub fn from_result(msg: &ResultMsg) -> Self {
         Self {
             host: msg.host.clone(),
@@ -27,6 +28,7 @@ impl DeduplicationKey {
 ///
 /// Extracts the owner (user) bits from a standard Unix mode and returns
 /// an uppercase `"RWX"`-style string (e.g., `"RW-"` for mode 0o644).
+#[must_use]
 pub fn file_mode_to_rwx(mode: u32) -> String {
     let owner = (mode >> 6) & 0o7;
     let r = if owner & 0o4 != 0 { 'R' } else { '-' };

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinSet;
@@ -9,9 +10,9 @@ use crate::config::{OperatingMode, ScannerConfig};
 use crate::nfs::{AuthStrategy, NfsConnector};
 use crate::pipeline::{FileMsg, HostConnectionPool, HostHealthRegistry, PipelineStats, ResultMsg};
 
-use super::cache::ConnectionCache;
 use super::error::ScannerError;
 use super::file::scan_file;
+use super::pool::SharedConnectionPool;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -29,6 +30,15 @@ pub async fn run(
 ) -> Result<(), ScannerError> {
     let semaphore = Arc::new(Semaphore::new(config.scanner_tasks));
     let max_scan_size = config.max_scan_size;
+    let chunk_size = config.read_chunk_size;
+    let connect_timeout = Duration::from_secs(config.connect_timeout_secs);
+    let nfs_timeout = Duration::from_secs(config.nfs_timeout_secs);
+    let pool = Arc::new(SharedConnectionPool::new(
+        config.max_connections_per_host,
+        config.max_connections_per_host * 2,
+        connect_timeout,
+        Duration::from_secs(300),
+    ));
     let mut join_set = JoinSet::new();
 
     loop {
@@ -45,11 +55,12 @@ pub async fn run(
             continue;
         }
 
-        let permit = semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| ScannerError::ChannelClosed)?;
+        let permit = tokio::select! {
+            result = semaphore.clone().acquire_owned() => {
+                result.map_err(|_| ScannerError::ChannelClosed)?
+            }
+            _ = token.cancelled() => break,
+        };
 
         let rules = Arc::clone(&rules);
         let connector = Arc::clone(&connector);
@@ -58,35 +69,75 @@ pub async fn run(
         let stats = Arc::clone(&stats);
         let health = Arc::clone(&health);
         let conn_pool = Arc::clone(&conn_pool);
+        let pool = Arc::clone(&pool);
 
+        let task_timeout = Duration::from_secs(config.task_timeout_secs);
+        let scan_retries = config.scan_retries;
+        let scan_retry_delay_ms = config.scan_retry_delay_ms;
+        let task_token = token.clone();
         join_set.spawn(async move {
             let _permit = permit;
-            let mut conn_cache = ConnectionCache::new();
 
-            // Acquire per-host connection permit
+            // Acquire per-host connection permit (with timeout)
             let host_sem = conn_pool.get_semaphore(&msg.host);
-            let _host_permit = match host_sem.acquire().await {
-                Ok(p) => p,
-                Err(_) => return,
+            let Ok(Ok(_host_permit)) = tokio::time::timeout(nfs_timeout, host_sem.acquire()).await
+            else {
+                return;
             };
 
-            let results = scan_file(
-                &msg,
-                &rules,
-                &*connector,
-                &auth,
-                mode,
-                max_scan_size,
-                &mut conn_cache,
-                &stats,
-                &health,
+            // Phase 1: scan work — this is what the timeout protects
+            let Ok(results) = tokio::time::timeout(
+                task_timeout,
+                scan_file(
+                    &msg,
+                    &rules,
+                    &*connector,
+                    &auth,
+                    mode,
+                    max_scan_size,
+                    chunk_size,
+                    &pool,
+                    &stats,
+                    &health,
+                    nfs_timeout,
+                    scan_retries,
+                    scan_retry_delay_ms,
+                    &task_token,
+                ),
             )
-            .await;
+            .await
+            else {
+                tracing::debug!(
+                    host = %msg.host,
+                    file = %msg.file_path,
+                    "scanner task timed out after {:?}",
+                    task_timeout,
+                );
+                stats.inc_errors_transient();
+                health.record_error(&msg.host);
+                return;
+            };
 
+            // Phase 2: send results — outside the scan timeout, with a send timeout
             for result in results {
                 stats.inc_findings();
-                if result_tx.send(result).await.is_err() {
-                    break; // Receiver dropped — graceful stop
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(60),
+                    result_tx.send(result),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(_)) => break, // channel closed
+                    Err(_) => {
+                        // Send timed out — output sink is stalled
+                        tracing::warn!(
+                            host = %msg.host,
+                            file = %msg.file_path,
+                            "dropping finding: result channel send timed out after 60s"
+                        );
+                        stats.inc_findings_dropped();
+                    }
                 }
             }
         });
@@ -138,12 +189,18 @@ mod tests {
         ScannerConfig {
             scanner_tasks: tasks,
             max_scan_size: 1_048_576,
+            read_chunk_size: 1_048_576,
             uid: 0,
             gid: 0,
             uid_cycle: true,
             max_uid_attempts: 5,
             max_connections_per_host: 10,
             check_subtree_bypass: false,
+            nfs_timeout_secs: 30,
+            connect_timeout_secs: 10,
+            task_timeout_secs: 300,
+            scan_retries: 0,
+            scan_retry_delay_ms: 0,
         }
     }
 
@@ -182,6 +239,9 @@ mod tests {
             max_size: None,
             context_bytes: None,
             description: None,
+            exclude_patterns: None,
+            skip_comments: None,
+            exclude_file_paths: None,
         }
     }
 
@@ -189,6 +249,18 @@ mod tests {
         let mut connector = MockNfsConnector::new();
         connector.expect_connect().returning(|_, _, _| {
             let mut mock = MockNfsOps::new();
+            mock.expect_root_handle()
+                .return_const(NfsFh::new(vec![1, 2, 3]));
+            mock.expect_getattr().returning(|_| {
+                Ok(NfsAttrs {
+                    file_type: NfsFileType::Directory,
+                    size: 4096,
+                    mode: 0o755,
+                    uid: 0,
+                    gid: 0,
+                    mtime: 0,
+                })
+            });
             mock.expect_read().returning(|_, _, _| {
                 Ok(ReadResult {
                     data: b"plain text".to_vec(),
@@ -297,10 +369,21 @@ mod tests {
         connector.expect_connect().returning(move |_, _, _| {
             let n = call_count_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if n == 0 {
-                // First file fails
                 Err(Box::new(NfsError::ConnectionLost) as Box<dyn std::error::Error + Send + Sync>)
             } else {
                 let mut mock = MockNfsOps::new();
+                mock.expect_root_handle()
+                    .return_const(NfsFh::new(vec![1, 2, 3]));
+                mock.expect_getattr().returning(|_| {
+                    Ok(NfsAttrs {
+                        file_type: NfsFileType::Directory,
+                        size: 4096,
+                        mode: 0o755,
+                        uid: 0,
+                        gid: 0,
+                        mtime: 0,
+                    })
+                });
                 mock.expect_read().returning(|_, _, _| {
                     Ok(ReadResult {
                         data: b"data".to_vec(),

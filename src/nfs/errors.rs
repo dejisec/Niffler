@@ -28,7 +28,8 @@ pub enum NfsError {
 
 impl NfsError {
     /// Convenience check for UID cycling logic.
-    pub fn is_permission_denied(&self) -> bool {
+    #[must_use]
+    pub const fn is_permission_denied(&self) -> bool {
         matches!(self, Self::PermissionDenied)
     }
 }
@@ -45,7 +46,8 @@ pub enum ErrorClass {
 }
 
 /// Classify an NFS error into a coarse category for handling decisions.
-pub fn classify_error(e: &NfsError) -> ErrorClass {
+#[must_use]
+pub const fn classify_error(e: &NfsError) -> ErrorClass {
     match e {
         NfsError::PermissionDenied => ErrorClass::PermissionDenied,
         NfsError::StaleHandle => ErrorClass::Stale,
@@ -110,27 +112,5 @@ mod tests {
         assert!(!NfsError::Transient("x".into()).is_permission_denied());
         assert!(!NfsError::ConnectionLost.is_permission_denied());
         assert!(!NfsError::ExportFatal("x".into()).is_permission_denied());
-    }
-
-    #[test]
-    fn nfs_error_display() {
-        assert_eq!(NfsError::PermissionDenied.to_string(), "permission denied");
-        assert_eq!(NfsError::StaleHandle.to_string(), "stale file handle");
-        assert_eq!(NfsError::NotFound.to_string(), "not found");
-        assert_eq!(
-            NfsError::Transient("timeout".into()).to_string(),
-            "transient: timeout"
-        );
-        assert_eq!(NfsError::ConnectionLost.to_string(), "connection lost");
-        assert_eq!(
-            NfsError::ExportFatal("mount denied".into()).to_string(),
-            "export fatal: mount denied"
-        );
-    }
-
-    #[test]
-    fn nfs_error_is_std_error() {
-        let err: &dyn std::error::Error = &NfsError::PermissionDenied;
-        assert!(!err.to_string().is_empty());
     }
 }

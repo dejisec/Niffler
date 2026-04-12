@@ -3,6 +3,7 @@ pub mod connector;
 pub mod errors;
 pub mod ops;
 pub mod socks;
+pub mod transport;
 pub mod types;
 pub mod v3;
 pub mod v4;

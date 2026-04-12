@@ -4,22 +4,22 @@
 <h1 class="page-title">Dashboard</h1>
 
 <div class="stats-grid">
-    <div class="card stat-card">
+    <a href="/findings?triage=Black" class="card stat-card stat-card-link">
         <div class="stat-number sev-black">{{ count_black }}</div>
         <div class="stat-label">Black</div>
-    </div>
-    <div class="card stat-card">
+    </a>
+    <a href="/findings?triage=Red" class="card stat-card stat-card-link">
         <div class="stat-number sev-red">{{ count_red }}</div>
         <div class="stat-label">Red</div>
-    </div>
-    <div class="card stat-card">
+    </a>
+    <a href="/findings?triage=Yellow" class="card stat-card stat-card-link">
         <div class="stat-number sev-yellow">{{ count_yellow }}</div>
         <div class="stat-label">Yellow</div>
-    </div>
-    <div class="card stat-card">
+    </a>
+    <a href="/findings?triage=Green" class="card stat-card stat-card-link">
         <div class="stat-number sev-green">{{ count_green }}</div>
         <div class="stat-label">Green</div>
-    </div>
+    </a>
 </div>
 
 <div class="dashboard-grid">
@@ -27,10 +27,10 @@
         <div class="card-header">Severity Distribution</div>
         {% if total > 0 %}
         <div class="distribution-bar">
-            <div class="seg-black" style="width: {{ pct_black }}%"></div>
-            <div class="seg-red" style="width: {{ pct_red }}%"></div>
-            <div class="seg-yellow" style="width: {{ pct_yellow }}%"></div>
-            <div class="seg-green" style="width: {{ pct_green }}%"></div>
+            {% if pct_black > 0.0 %}<div class="seg-black" style="width: {{ pct_black }}%">{% if pct_black >= 8.0 %}{{ pct_black as i64 }}%{% endif %}</div>{% endif %}
+            {% if pct_red > 0.0 %}<div class="seg-red" style="width: {{ pct_red }}%">{% if pct_red >= 8.0 %}{{ pct_red as i64 }}%{% endif %}</div>{% endif %}
+            {% if pct_yellow > 0.0 %}<div class="seg-yellow" style="width: {{ pct_yellow }}%">{% if pct_yellow >= 8.0 %}{{ pct_yellow as i64 }}%{% endif %}</div>{% endif %}
+            {% if pct_green > 0.0 %}<div class="seg-green" style="width: {{ pct_green }}%">{% if pct_green >= 8.0 %}{{ pct_green as i64 }}%{% endif %}</div>{% endif %}
         </div>
         {% else %}
         <div class="empty-state">No findings yet</div>
@@ -62,7 +62,7 @@
         <span class="badge badge-{{ f.triage|lower }}">{{ f.triage }}</span>
         <span class="rule">{{ f.rule_name }}</span>
         <span class="path">{{ f.host }}:{{ f.file_path }}</span>
-        <span class="time">{{ f.timestamp }}</span>
+        <span class="time" title="{{ f.timestamp }}">{{ f.display_timestamp() }}</span>
     </div>
     {% endfor %}
     {% endif %}

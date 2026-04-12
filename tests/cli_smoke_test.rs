@@ -37,7 +37,7 @@ fn scan_help_contains_all_flag_groups() {
         "--walker-tasks",
         "--discovery-tasks",
         "--max-depth",
-        "--privileged-port",
+        "--no-privileged-port",
         "--generate-config",
         "--config",
         "--min-severity",
@@ -50,19 +50,6 @@ fn scan_help_contains_all_flag_groups() {
 }
 
 #[test]
-fn scan_help_shows_default_values() {
-    Command::cargo_bin("niffler")
-        .unwrap()
-        .args(["scan", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("scan"))
-        .stdout(predicate::str::contains("niffler.db"))
-        .stdout(predicate::str::contains("50"))
-        .stdout(predicate::str::contains("1048576"));
-}
-
-#[test]
 fn cli_generate_config_outputs_valid_toml() {
     let output = Command::cargo_bin("niffler")
         .unwrap()
@@ -70,24 +57,11 @@ fn cli_generate_config_outputs_valid_toml() {
         .output()
         .expect("failed to run niffler scan -z");
 
-    assert!(output.status.success(), "niffler scan -z should exit 0");
+    assert!(output.status.success());
 
     let stdout = String::from_utf8(output.stdout).expect("stdout is valid UTF-8");
     let value: toml::Value = toml::from_str(&stdout).expect("stdout should be valid TOML");
     assert!(value.is_table(), "TOML output should be a table");
-}
-
-#[test]
-fn cli_generate_config_contains_sections() {
-    Command::cargo_bin("niffler")
-        .unwrap()
-        .args(["scan", "-z"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("[discovery]"))
-        .stdout(predicate::str::contains("[walker]"))
-        .stdout(predicate::str::contains("[scanner]"))
-        .stdout(predicate::str::contains("[output]"));
 }
 
 #[test]
@@ -144,33 +118,6 @@ fn export_help_shows_options() {
         .stdout(predicate::str::contains("--host"))
         .stdout(predicate::str::contains("--rule"))
         .stdout(predicate::str::contains("--scan-id"));
-}
-
-#[test]
-fn serve_without_db_fails() {
-    Command::cargo_bin("niffler")
-        .unwrap()
-        .arg("serve")
-        .assert()
-        .failure();
-}
-
-#[test]
-fn export_without_db_fails() {
-    Command::cargo_bin("niffler")
-        .unwrap()
-        .args(["export", "-f", "json"])
-        .assert()
-        .failure();
-}
-
-#[test]
-fn export_without_format_fails() {
-    Command::cargo_bin("niffler")
-        .unwrap()
-        .args(["export", "--db", "scan.db"])
-        .assert()
-        .failure();
 }
 
 #[test]

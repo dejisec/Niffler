@@ -39,6 +39,9 @@ pub async fn run(
     run_inner(rx, config, targets, mode, stats, console_writer).await
 }
 
+/// Batch size for SQLite inserts — balance between latency and throughput.
+const WRITE_BATCH_SIZE: usize = 500;
+
 /// Inner implementation that accepts an injected console writer for testability.
 async fn run_inner(
     mut rx: mpsc::Receiver<ResultMsg>,
@@ -51,21 +54,54 @@ async fn run_inner(
     let sqlite_writer = SqliteWriter::new(&config.db_path, targets, mode).await?;
 
     let mut console_seen = HashSet::new();
+    let mut batch: Vec<ResultMsg> = Vec::with_capacity(WRITE_BATCH_SIZE);
 
-    while let Some(msg) = rx.recv().await {
-        if msg.triage < config.min_severity {
-            continue;
+    loop {
+        // If the batch is empty, block until the first message arrives.
+        if batch.is_empty() {
+            match rx.recv().await {
+                Some(msg) => batch.push(msg),
+                None => break, // channel closed, nothing left
+            }
         }
 
-        // Always write to SQLite (DB UNIQUE constraint handles dedup)
-        sqlite_writer.write(&msg).await?;
+        // Drain up to WRITE_BATCH_SIZE without blocking
+        while batch.len() < WRITE_BATCH_SIZE {
+            match rx.try_recv() {
+                Ok(msg) => batch.push(msg),
+                Err(_) => break,
+            }
+        }
 
-        // Optionally tee to console with in-memory dedup
-        if let Some(ref mut writer) = console_writer {
-            let key = DeduplicationKey::from_result(&msg);
-            if console_seen.insert(key) {
-                console::write_console(&msg, &mut **writer)?;
-                writer.flush()?;
+        // Filter by severity and tee to console
+        let mut db_batch: Vec<ResultMsg> = Vec::with_capacity(batch.len());
+        for msg in batch.drain(..) {
+            if msg.triage < config.min_severity {
+                continue;
+            }
+
+            // Optionally tee to console with in-memory dedup.
+            // Broken pipe or other I/O errors are non-fatal.
+            if let Some(ref mut writer) = console_writer {
+                let key = DeduplicationKey::from_result(&msg);
+                if console_seen.insert(key) {
+                    if let Err(e) = console::write_console(&msg, &mut **writer) {
+                        tracing::warn!("console write error: {e}");
+                    }
+                    let _ = writer.flush();
+                }
+            }
+
+            db_batch.push(msg);
+        }
+
+        // Batch write to SQLite
+        if !db_batch.is_empty() {
+            let batch_len = db_batch.len() as u64;
+            if let Err(e) = sqlite_writer.write_batch(&db_batch).await {
+                tracing::warn!("failed to write finding batch to SQLite: {e}");
+            } else {
+                stats.add_findings_written(batch_len);
             }
         }
     }
@@ -81,6 +117,7 @@ mod tests {
     use crate::classifier::Triage;
     use crate::web::db::FindingsQuery;
     use chrono::Utc;
+    use std::io;
     use std::io::Cursor;
     use std::sync::Arc;
 
@@ -361,5 +398,84 @@ mod tests {
         let db = crate::web::db::Database::open(tmp.path()).await.unwrap();
         let count = db.count_findings(&FindingsQuery::default()).await.unwrap();
         assert_eq!(count, 3, "all three findings should be in DB");
+    }
+
+    /// A writer that fails on every write — simulates broken pipe.
+    struct FailingWriter;
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+        }
+    }
+
+    #[tokio::test]
+    async fn output_handles_large_batch_efficiently() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = test_config(tmp.path().to_path_buf(), false);
+        let stats = Arc::new(PipelineStats::default());
+
+        let (tx, rx) = mpsc::channel::<ResultMsg>(1000);
+        for i in 0..500 {
+            tx.send(make_msg(
+                Triage::Red,
+                &format!("Rule{i}"),
+                &format!("file{i}.txt"),
+                None,
+            ))
+            .await
+            .unwrap();
+        }
+        drop(tx);
+
+        run_inner(rx, &config, &[], "scan", Arc::clone(&stats), None)
+            .await
+            .unwrap();
+
+        let db = crate::web::db::Database::open(tmp.path()).await.unwrap();
+        let count = db.count_findings(&FindingsQuery::default()).await.unwrap();
+        assert_eq!(count, 500, "all 500 findings should be in DB");
+    }
+
+    #[tokio::test]
+    async fn output_survives_console_write_error() {
+        // Bug 1.4: console write errors must not abort the output loop.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = test_config(tmp.path().to_path_buf(), true);
+        let stats = Arc::new(PipelineStats::default());
+
+        let (tx, rx) = mpsc::channel::<ResultMsg>(10);
+        tx.send(make_msg(Triage::Black, "SSHKey", "id_rsa", None))
+            .await
+            .unwrap();
+        tx.send(make_msg(
+            Triage::Red,
+            "Creds",
+            "creds.txt",
+            Some("pw".into()),
+        ))
+        .await
+        .unwrap();
+        drop(tx);
+
+        // Use a FailingWriter to trigger io::Error on every write
+        let writer: Box<dyn Write + Send> = Box::new(FailingWriter);
+
+        let result = run_inner(rx, &config, &[], "scan", Arc::clone(&stats), Some(writer)).await;
+
+        assert!(
+            result.is_ok(),
+            "output should not abort on console write failure: {result:?}"
+        );
+
+        // Both findings should still be in SQLite despite console errors
+        let db = crate::web::db::Database::open(tmp.path()).await.unwrap();
+        let count = db.count_findings(&FindingsQuery::default()).await.unwrap();
+        assert_eq!(
+            count, 2,
+            "both findings should be in DB even when console write fails"
+        );
     }
 }

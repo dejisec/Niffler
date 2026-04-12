@@ -9,20 +9,18 @@ pub enum MatchAction {
     Discard,
     /// Forward to relay_targets for further evaluation.
     Relay,
-    /// Parse the file as key material (SSH, X.509).
-    CheckForKeys,
 }
 
 impl MatchAction {
     /// Sort key for rule evaluation ordering: Discard first, then Snaffle,
-    /// then Relay, then CheckForKeys. Matches Snaffler's discard-first
-    /// optimization so cheap rejection fires before expensive content scans.
-    pub fn sort_ordinal(&self) -> u8 {
+    /// then Relay. Matches Snaffler's discard-first optimization so cheap
+    /// rejection fires before expensive content scans.
+    #[must_use]
+    pub const fn sort_ordinal(&self) -> u8 {
         match self {
-            MatchAction::Discard => 0,
-            MatchAction::Snaffle => 1,
-            MatchAction::Relay => 2,
-            MatchAction::CheckForKeys => 3,
+            Self::Discard => 0,
+            Self::Snaffle => 1,
+            Self::Relay => 2,
         }
     }
 }

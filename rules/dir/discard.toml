@@ -10,6 +10,8 @@ patterns = [
     ".terraform", ".cargo", ".rustup", ".npm", ".yarn",
     ".venv", "venv", "bower_components", ".gradle", ".m2",
     ".next", ".nuxt",
+    ".local", ".thumbnails",
+    "__snapshots__", ".angular", ".nx", ".turbo",
     "lost+found",
 
     # Python packaging
@@ -29,6 +31,23 @@ patterns = [
 ]
 action = "Discard"
 description = "Prune directories that contain dependency, build, or filesystem recovery artifacts"
+
+[[rules]]
+name = "DiscardOracleVendorDirs"
+scope = "DirectoryEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [
+    ".patch_storage",
+    "sqlpatch",
+    "cfgtoollogs",
+    "AdapterExamples",
+    "rman-logs",
+    "OPatch",
+    "deinstall",
+]
+action = "Discard"
+description = "Prune Oracle product vendor directories — patches, tools, examples, logs"
 
 [[rules]]
 name = "DiscardLinuxSystemPaths"
@@ -113,6 +132,124 @@ action = "Discard"
 description = "Prune Linux system paths that contain binaries, documentation, locale data, package caches, and other non-credential content"
 
 [[rules]]
+name = "DiscardLinuxSystemPathsNested"
+scope = "DirectoryEnumeration"
+match_location = "FilePath"
+match_type = "Regex"
+patterns = [
+    # Documentation and manpages
+    '(?:^|/)usr/share/doc(?:/|$)',
+    '(?:^|/)usr/share/man(?:/|$)',
+    '(?:^|/)usr/share/info(?:/|$)',
+    '(?:^|/)usr/share/help(?:/|$)',
+    '(?:^|/)usr/share/gtk-doc(?:/|$)',
+    '(?:^|/)usr/share/licenses(?:/|$)',
+
+    # Locale, timezone, internationalization
+    '(?:^|/)usr/share/locale(?:/|$)',
+    '(?:^|/)usr/share/zoneinfo(?:/|$)',
+    '(?:^|/)usr/share/i18n(?:/|$)',
+    '(?:^|/)usr/lib/locale(?:/|$)',
+
+    # Fonts, icons, themes, UI assets
+    '(?:^|/)usr/share/fonts(?:/|$)',
+    '(?:^|/)usr/share/icons(?:/|$)',
+    '(?:^|/)usr/share/themes(?:/|$)',
+    '(?:^|/)usr/share/pixmaps(?:/|$)',
+    '(?:^|/)usr/share/sounds(?:/|$)',
+    '(?:^|/)usr/share/wallpapers(?:/|$)',
+    '(?:^|/)usr/share/backgrounds(?:/|$)',
+
+    # Desktop environment data
+    '(?:^|/)usr/share/mime(?:/|$)',
+    '(?:^|/)usr/share/applications(?:/|$)',
+    '(?:^|/)usr/share/glib-2\.0(?:/|$)',
+    '(?:^|/)usr/share/dbus-1(?:/|$)',
+    '(?:^|/)usr/share/X11(?:/|$)',
+
+    # Terminal definitions
+    '(?:^|/)usr/share/terminfo(?:/|$)',
+
+    # Language runtime system libraries (nested variants)
+    '(?:^|/)usr/share/perl(?:/|$)',
+    '(?:^|/)usr/share/perl5(?:/|$)',
+    '(?:^|/)usr/share/java(?:/|$)',
+    '(?:^|/)usr/share/ruby(?:/|$)',
+
+    # Editor/typesetting runtimes
+    '(?:^|/)usr/share/texmf(?:/|$)',
+    '(?:^|/)usr/share/texlive(?:/|$)',
+    '(?:^|/)usr/share/vim(?:/|$)',
+    '(?:^|/)usr/share/emacs(?:/|$)',
+    '(?:^|/)usr/share/nano(?:/|$)',
+    '(?:^|/)usr/share/gitweb(?:/|$)',
+
+    # Package manager state (nested variants)
+    '(?:^|/)var/cache/apt(?:/|$)',
+    '(?:^|/)var/cache/yum(?:/|$)',
+    '(?:^|/)var/cache/dnf(?:/|$)',
+    '(?:^|/)var/cache/pacman(?:/|$)',
+    '(?:^|/)var/cache/fontconfig(?:/|$)',
+    '(?:^|/)var/cache/man(?:/|$)',
+    '(?:^|/)var/cache/ldconfig(?:/|$)',
+    '(?:^|/)var/cache/debconf(?:/|$)',
+    '(?:^|/)var/lib/dpkg(?:/|$)',
+    '(?:^|/)var/lib/apt(?:/|$)',
+    '(?:^|/)var/lib/rpm(?:/|$)',
+    '(?:^|/)var/lib/pacman(?:/|$)',
+
+    # System state (binary databases)
+    '(?:^|/)var/lib/systemd(?:/|$)',
+    '(?:^|/)var/lib/dbus(?:/|$)',
+    '(?:^|/)var/lib/polkit-1(?:/|$)',
+    '(?:^|/)var/lib/mlocate(?:/|$)',
+    '(?:^|/)var/lib/plocate(?:/|$)',
+
+    # Public certificate store (no private keys)
+    '(?:^|/)etc/ssl/certs(?:/|$)',
+]
+action = "Discard"
+description = "Linux system paths matched anywhere in the file path (covers backup-tree and nested prefixes)"
+
+[[rules]]
+name = "DiscardOracleVendorDirsNested"
+scope = "DirectoryEnumeration"
+match_location = "FilePath"
+match_type = "Regex"
+patterns = [
+    # Oracle-bundled Perl man pages
+    '(?:^|/)perl/man/man[1-9](?:/|$)',
+
+    # Oracle RDBMS catalog SQL
+    '(?:^|/)rdbms/admin(?:/|$)',
+
+    # Oracle message catalogs
+    '(?:^|/)srvm/mesg(?:/|$)',
+    '(?:^|/)ldap/mesg(?:/|$)',
+
+    # Oracle Net Manager / ODBC HTML help
+    '(?:^|/)network/tools/help(?:/|$)',
+    '(?:^|/)odbc/help(?:/|$)',
+
+    # Embedded OC4J config templates
+    '(?:^|/)oc4j/j2ee/home/OC4J_[A-Z_]+_config(?:/|$)',
+
+    # Oracle Autonomous Health Framework
+    '(?:^|/)oracle\.ahf(?:/|$)',
+
+    # Oracle patch/install infrastructure (nested variants)
+    '(?:^|/)OPatch(?:/|$)',
+    '(?:^|/)software_install/patches(?:/|$)',
+    '(?:^|/)PatchBKP(?:/|$)',
+    '(?:^|/)Patch_Bkp(?:/|$)',
+    '(?:^|/)sqlpatch(?:/|$)',
+    '(?:^|/)cfgtoollogs(?:/|$)',
+    '(?:^|/)AdapterExamples(?:/|$)',
+]
+action = "Discard"
+description = "Oracle vendor directories matched anywhere in the file path (nested under any prefix)"
+
+[[rules]]
 name = "DiscardLanguageRuntimePaths"
 scope = "DirectoryEnumeration"
 match_location = "FilePath"
@@ -140,6 +277,9 @@ patterns = [
     '(?:^|/)lib/R/',
     # Erlang/OTP
     '(?:^|/)lib/erlang/',
+    # Oracle-style Perl installations (non-standard prefix)
+    '(?:^|/)perl/lib/(?:site_perl|5\.\d)',
+    '(?:^|/)perl/lib/\d+\.\d+',
 ]
 action = "Discard"
 description = "Prune language runtime and standard library directories regardless of installation prefix"
@@ -166,3 +306,34 @@ patterns = [
 ]
 action = "Discard"
 description = "Prune container runtime layer storage — binary overlays, no scannable content"
+
+[[rules]]
+name = "DiscardPythonDemoDirs"
+scope = "DirectoryEnumeration"
+match_location = "FilePath"
+match_type = "Regex"
+patterns = [
+    # m2crypto, Zope, medusa demo directories shipped inside OS package docs.
+    # Canonical locations: /usr/share/doc/m2crypto-*/demo/{rsa,ec,smime,ssl},
+    # but the `demo/<subdir>` shape is stable across install prefixes and
+    # backup trees.
+    '(?:^|/)demo/(?:rsa|ec|smime|https\.howto|medusa\d*|Zope\w*|ssl)(?:/|$)',
+]
+action = "Discard"
+description = "Python library demo/example directories (m2crypto, Zope, medusa) -- shipped in OS package docs, no real credentials"
+
+[[rules]]
+name = "DiscardOracleInstallLibDirs"
+scope = "DirectoryEnumeration"
+match_location = "FilePath"
+match_type = "Regex"
+patterns = [
+    # Oracle install library/makefile trees -- env_*.mk, sysliblist, link scripts
+    '(?:^|/)rdbms/lib(?:/|$)',
+    '(?:^|/)network/lib(?:/|$)',
+    '(?:^|/)precomp/lib(?:/|$)',
+    '(?:^|/)plsql/lib(?:/|$)',
+    '(?:^|/)sqlplus/lib(?:/|$)',
+]
+action = "Discard"
+description = "Oracle install tree lib/ subdirectories containing env_*.mk build scripts and sysliblists -- generic .mk files elsewhere are still scanned"

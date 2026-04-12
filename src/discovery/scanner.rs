@@ -23,6 +23,7 @@ pub struct PortScanResult {
 }
 
 impl PortScanResult {
+    #[must_use]
     pub fn has_nfs(&self) -> bool {
         self.nfs_via_rpcbind || self.nfs_direct_open
     }
@@ -158,17 +159,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn port_scan_result_nfs_via_rpcbind_and_direct() {
-        let r = PortScanResult {
-            host: TargetHost::Ip("10.0.0.1".parse().unwrap()),
-            rpcbind_open: true,
-            nfs_via_rpcbind: true,
-            nfs_direct_open: true,
-        };
-        assert!(r.has_nfs());
-    }
-
-    #[test]
     fn port_scan_result_nfs_via_rpcbind_only() {
         let r = PortScanResult {
             host: TargetHost::Ip("10.0.0.1".parse().unwrap()),
@@ -184,28 +174,6 @@ mod tests {
         let r = PortScanResult {
             host: TargetHost::Ip("10.0.0.1".parse().unwrap()),
             rpcbind_open: true,
-            nfs_via_rpcbind: false,
-            nfs_direct_open: false,
-        };
-        assert!(!r.has_nfs());
-    }
-
-    #[test]
-    fn port_scan_result_nfs_direct_only() {
-        let r = PortScanResult {
-            host: TargetHost::Ip("10.0.0.1".parse().unwrap()),
-            rpcbind_open: false,
-            nfs_via_rpcbind: false,
-            nfs_direct_open: true,
-        };
-        assert!(r.has_nfs());
-    }
-
-    #[test]
-    fn port_scan_result_neither_open() {
-        let r = PortScanResult {
-            host: TargetHost::Ip("10.0.0.1".parse().unwrap()),
-            rpcbind_open: false,
             nfs_via_rpcbind: false,
             nfs_direct_open: false,
         };

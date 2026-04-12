@@ -63,6 +63,7 @@ pub async fn run_pipeline(
         let t2 = t.clone();
         tokio::spawn(async move {
             let _ = tokio::signal::ctrl_c().await;
+            tracing::warn!("received Ctrl+C, shutting down...");
             t2.cancel();
         });
         t
@@ -78,7 +79,7 @@ pub async fn run_pipeline(
     };
 
     // Progress bars — caller passes Some(MultiProgress) when enabled
-    let progress = Arc::new(ProgressDisplay::new(multi));
+    let progress = Arc::new(ProgressDisplay::new(multi, config.output.min_severity));
 
     // Spawn progress updater task
     let progress_handle = {
@@ -110,7 +111,10 @@ pub async fn run_pipeline(
     };
 
     // Shared infrastructure for walker + scanner
-    let health = Arc::new(HostHealthRegistry::default());
+    let health = Arc::new(HostHealthRegistry::new(
+        config.health.error_threshold,
+        std::time::Duration::from_secs(config.health.cooldown_secs),
+    ));
     let conn_pool = Arc::new(HostConnectionPool::new(
         config.scanner.max_connections_per_host,
     ));
@@ -203,43 +207,107 @@ pub async fn run_pipeline(
 
     // Sequential await with sender drops for graceful channel closure.
     // Each phase await races against the cancellation token so Ctrl+C
-    // doesn't block on a hung phase.
+    // doesn't block on a hung phase. When cancellation wins, abort the
+    // task so its cloned senders are dropped — otherwise the downstream
+    // receiver never sees channel-closed and hangs forever.
+    //
+    // IMPORTANT: Phase errors (Ok(Err(e))) are logged but do NOT abort
+    // the pipeline — downstream phases must drain gracefully. Only panics
+    // (Err(join_err)) are fatal: we abort all remaining tasks and return.
+    let mut discovery_handle = discovery_handle;
     tokio::select! {
-        result = discovery_handle => {
-            result.map_err(PipelineError::from)?
-                  .map_err(|e| PipelineError::PhaseFailed(e.to_string()))?;
+        result = &mut discovery_handle => {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::error!("discovery phase error: {e}");
+                    // Don't abort pipeline — let downstream phases drain
+                }
+                Err(join_err) => {
+                    // JoinError = panic — abort everything
+                    if let Some(ref h) = walker_handle { h.abort(); }
+                    if let Some(ref h) = scanner_handle { h.abort(); }
+                    output_handle.abort();
+                    return Err(PipelineError::from(join_err));
+                }
+            }
         }
-        _ = token.cancelled() => {}
+        _ = token.cancelled() => {
+            discovery_handle.abort();
+        }
     }
     drop(channels.export_tx);
 
-    if let Some(handle) = walker_handle {
+    if let Some(mut handle) = walker_handle {
         tokio::select! {
-            result = handle => {
-                result.map_err(PipelineError::from)?
-                      .map_err(|e| PipelineError::PhaseFailed(e.to_string()))?;
+            result = &mut handle => {
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        tracing::error!("walker phase error: {e}");
+                    }
+                    Err(join_err) => {
+                        if let Some(ref h) = scanner_handle { h.abort(); }
+                        output_handle.abort();
+                        return Err(PipelineError::from(join_err));
+                    }
+                }
             }
-            _ = token.cancelled() => {}
+            _ = token.cancelled() => {
+                handle.abort();
+            }
         }
     }
     drop(channels.file_tx);
 
-    if let Some(handle) = scanner_handle {
+    if let Some(mut handle) = scanner_handle {
         tokio::select! {
-            result = handle => {
-                result.map_err(PipelineError::from)?
-                      .map_err(|e| PipelineError::PhaseFailed(e.to_string()))?;
+            result = &mut handle => {
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        tracing::error!("scanner phase error: {e}");
+                    }
+                    Err(join_err) => {
+                        output_handle.abort();
+                        return Err(PipelineError::from(join_err));
+                    }
+                }
             }
-            _ = token.cancelled() => {}
+            _ = token.cancelled() => {
+                handle.abort();
+            }
         }
     }
     drop(channels.result_tx);
 
-    // Always await output — all senders are dropped, so it drains quickly
-    output_handle
-        .await
-        .map_err(PipelineError::from)?
-        .map_err(|e| PipelineError::PhaseFailed(e.to_string()))?;
+    // Output sink: all senders should be dropped (naturally or via abort).
+    // When cancelled, add a timeout as a safety net in case a sender
+    // leaked or an abort hasn't taken effect yet.
+    if token.is_cancelled() {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), output_handle).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(e))) => {
+                tracing::warn!("output phase error during shutdown: {e}");
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("output task panicked during shutdown: {e}");
+            }
+            Err(_) => {
+                tracing::warn!("output drain timed out after Ctrl+C");
+            }
+        }
+    } else {
+        match output_handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::error!("output phase error: {e}");
+            }
+            Err(join_err) => {
+                return Err(PipelineError::from(join_err));
+            }
+        }
+    }
 
     // Finish progress bars and stop updater
     progress.update_from_stats(&stats);
@@ -279,6 +347,7 @@ mod tests {
                 discovery_tasks: 10,
                 timeout_secs: 5,
                 proxy: None,
+                connect_timeout_secs: 10,
             },
             walker: WalkerConfig {
                 walker_tasks: 10,
@@ -289,25 +358,37 @@ mod tests {
                 walk_retry_delay_ms: 500,
                 uid_cycle: true,
                 max_uid_attempts: 5,
+                nfs_timeout_secs: 30,
+                connect_timeout_secs: 10,
+                parallel_dirs: 1,
             },
             scanner: ScannerConfig {
                 scanner_tasks: 10,
                 max_scan_size: 1_048_576,
+                read_chunk_size: 1_048_576,
                 uid: 65534,
                 gid: 65534,
                 uid_cycle: true,
                 max_uid_attempts: 5,
                 max_connections_per_host: 8,
                 check_subtree_bypass: false,
+                nfs_timeout_secs: 30,
+                connect_timeout_secs: 10,
+                task_timeout_secs: 300,
+                scan_retries: 0,
+                scan_retry_delay_ms: 0,
             },
             output: OutputConfig {
                 db_path: std::env::temp_dir().join("niffler_test_pipeline.db"),
                 live: false,
                 min_severity: Triage::Green,
             },
+            health: crate::config::HealthConfig {
+                error_threshold: 10,
+                cooldown_secs: 60,
+            },
             rules_dir: None,
             extra_rules: None,
-            min_severity: Triage::Green,
             generate_config: false,
         }
     }
@@ -546,5 +627,35 @@ triage = "Green"
             .expect("invalid scope/location should be rejected");
         let msg = err.to_string();
         assert!(msg.contains("invalid scope/location"), "error: {msg}");
+    }
+
+    #[tokio::test]
+    async fn run_pipeline_ctrl_c_terminates_promptly() {
+        // Simulate a real scan where phases are doing work when Ctrl+C hits.
+        // Without the fix, detached tasks hold sender clones and output hangs.
+        let config = test_config(OperatingMode::Scan);
+        let connector = mock_connector();
+        let token = CancellationToken::new();
+        let token2 = token.clone();
+
+        // Cancel after 100ms — simulates Ctrl+C during active scan
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            token2.cancel();
+        });
+
+        // Pipeline must return within 3 seconds of cancellation.
+        // Before fix: hangs forever. After fix: returns in <1s.
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            run_pipeline(config, connector, Some(token), None),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "pipeline must terminate promptly after Ctrl+C, not hang"
+        );
+        assert!(result.unwrap().is_ok());
     }
 }

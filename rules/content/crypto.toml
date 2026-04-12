@@ -1,16 +1,52 @@
 [[rules]]
-name = "CryptoPatterns"
+name = "CryptoPrivateKeys"
 scope = "ContentsEnumeration"
 match_location = "FileContentAsString"
 match_type = "Regex"
 patterns = [
-    '-----BEGIN\s+(RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----',
+    '-----BEGIN\s+(RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----',
     '-----BEGIN PGP PRIVATE KEY BLOCK-----',
-    '-----BEGIN CERTIFICATE-----',
     'PuTTY-User-Key-File-[0-9]',
 ]
+action = "Snaffle"
+triage = "Black"
+max_size = 1048576
+context_bytes = 200
+exclude_file_paths = [
+    # OS-package demo keys: m2crypto, pyca-cryptography, openssl test vectors,
+    # etc., ship real-looking PEM blobs inside /usr/share/doc/. Suppress all of
+    # them -- real production keys live in /etc/ssl/private/, ~/.ssh/, /root/,
+    # service configs, not under the documentation tree.
+    '(?i)/usr/share/doc/',
+    # Python venv / system-site-packages test vendored PEM fixtures
+    '(?i)/site-packages/[^/]+/tests?/',
+    # Ruby gem test vendored PEM fixtures
+    '(?i)/gems/[^/]+/(?:test|spec)/',
+    # Go module test vendored PEM fixtures
+    '(?i)/go/pkg/mod/[^/]+/testdata/',
+]
+description = "Unencrypted private key material"
+
+[[rules]]
+name = "CryptoEncryptedKeys"
+scope = "ContentsEnumeration"
+match_location = "FileContentAsString"
+match_type = "Regex"
+patterns = ['-----BEGIN ENCRYPTED PRIVATE KEY-----']
 action = "Snaffle"
 triage = "Red"
 max_size = 1048576
 context_bytes = 200
-description = "Cryptographic material -- private key PEM headers, PGP private keys, certificates"
+description = "Encrypted private key -- still valuable if passphrase is weak"
+
+[[rules]]
+name = "CryptoCertificates"
+scope = "ContentsEnumeration"
+match_location = "FileContentAsString"
+match_type = "Regex"
+patterns = ['-----BEGIN CERTIFICATE-----']
+action = "Snaffle"
+triage = "Yellow"
+max_size = 1048576
+context_bytes = 200
+description = "X.509 certificate -- public, informational only"

@@ -11,7 +11,7 @@ use crate::pipeline::{ExportMsg, FileMsg, HostConnectionPool, HostHealthRegistry
 
 use super::error::WalkerError;
 use super::local::walk_local_paths;
-use super::remote::walk_export;
+use super::remote::{walk_export, walk_export_parallel};
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -62,11 +62,15 @@ pub async fn run(
             continue;
         }
 
-        let permit = semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| WalkerError::ChannelClosed)?;
+        let permit = tokio::select! {
+            result = semaphore.clone().acquire_owned() => {
+                result.map_err(|_| {
+                    tracing::error!("global walker semaphore closed unexpectedly");
+                    WalkerError::ChannelClosed
+                })?
+            }
+            _ = token.cancelled() => break,
+        };
 
         let file_tx = file_tx.clone();
         let connector = Arc::clone(&connector);
@@ -79,6 +83,9 @@ pub async fn run(
         let retry_delay_ms = config.walk_retry_delay_ms;
         let uid_cycle = config.uid_cycle;
         let max_uid_attempts = config.max_uid_attempts;
+        let connect_timeout = std::time::Duration::from_secs(config.connect_timeout_secs);
+        let nfs_timeout = std::time::Duration::from_secs(config.nfs_timeout_secs);
+        let parallel_dirs = config.parallel_dirs;
         let conn_pool = Arc::clone(&conn_pool);
         let health = Arc::clone(&health);
 
@@ -87,27 +94,55 @@ pub async fn run(
 
             // Per-host connection limit to avoid thundering herd
             let host_sem = conn_pool.get_semaphore(&export.host);
-            let _host_permit = match host_sem.acquire().await {
-                Ok(p) => p,
-                Err(_) => return,
+            let Ok(_host_permit) = host_sem.acquire().await else {
+                tracing::warn!(
+                    host = %export.host,
+                    export = %export.export_path,
+                    "host connection semaphore closed, skipping export"
+                );
+                return;
             };
 
-            if let Err(e) = walk_export(
-                &export,
-                &file_tx,
-                &*connector,
-                &rules,
-                &creds,
-                max_depth,
-                max_retries,
-                retry_delay_ms,
-                &token,
-                &stats,
-                uid_cycle,
-                max_uid_attempts,
-            )
-            .await
-            {
+            let walk_result = if parallel_dirs > 1 {
+                walk_export_parallel(
+                    &export,
+                    &file_tx,
+                    connector,
+                    rules,
+                    &creds,
+                    max_depth,
+                    max_retries,
+                    retry_delay_ms,
+                    &token,
+                    &stats,
+                    uid_cycle,
+                    max_uid_attempts,
+                    connect_timeout,
+                    nfs_timeout,
+                    parallel_dirs,
+                )
+                .await
+            } else {
+                walk_export(
+                    &export,
+                    &file_tx,
+                    &*connector,
+                    &rules,
+                    &creds,
+                    max_depth,
+                    max_retries,
+                    retry_delay_ms,
+                    &token,
+                    &stats,
+                    uid_cycle,
+                    max_uid_attempts,
+                    connect_timeout,
+                    nfs_timeout,
+                )
+                .await
+            };
+
+            if let Err(e) = walk_result {
                 match e.classify() {
                     ErrorClass::ConnectionLost => {
                         stats.inc_errors_connection();
@@ -242,6 +277,9 @@ mod tests {
             walk_retry_delay_ms: 10,
             uid_cycle: false,
             max_uid_attempts: 5,
+            nfs_timeout_secs: 30,
+            connect_timeout_secs: 10,
+            parallel_dirs: 1,
         };
         let token = CancellationToken::new();
         let stats = Arc::new(PipelineStats::default());
@@ -288,6 +326,9 @@ mod tests {
             walk_retry_delay_ms: 10,
             uid_cycle: false,
             max_uid_attempts: 5,
+            nfs_timeout_secs: 30,
+            connect_timeout_secs: 10,
+            parallel_dirs: 1,
         };
         let token = CancellationToken::new();
         token.cancel();
@@ -360,6 +401,9 @@ mod tests {
             walk_retry_delay_ms: 10,
             uid_cycle: false,
             max_uid_attempts: 5,
+            nfs_timeout_secs: 30,
+            connect_timeout_secs: 10,
+            parallel_dirs: 1,
         };
         let token = CancellationToken::new();
         let stats = Arc::new(PipelineStats::default());
@@ -411,6 +455,9 @@ mod tests {
             walk_retry_delay_ms: 10,
             uid_cycle: false,
             max_uid_attempts: 5,
+            nfs_timeout_secs: 30,
+            connect_timeout_secs: 10,
+            parallel_dirs: 1,
         };
         let token = CancellationToken::new();
         let stats = Arc::new(PipelineStats::default());
@@ -477,6 +524,9 @@ mod tests {
             walk_retry_delay_ms: 10,
             uid_cycle: false,
             max_uid_attempts: 5,
+            nfs_timeout_secs: 30,
+            connect_timeout_secs: 10,
+            parallel_dirs: 1,
         };
         let token = CancellationToken::new();
         let stats = Arc::new(PipelineStats::default());
@@ -547,6 +597,9 @@ mod tests {
             walk_retry_delay_ms: 10,
             uid_cycle: false,
             max_uid_attempts: 5,
+            nfs_timeout_secs: 30,
+            connect_timeout_secs: 10,
+            parallel_dirs: 1,
         };
         let token = CancellationToken::new();
         let stats = Arc::new(PipelineStats::default());
@@ -603,6 +656,9 @@ mod tests {
             walk_retry_delay_ms: 10,
             uid_cycle: false,
             max_uid_attempts: 5,
+            nfs_timeout_secs: 30,
+            connect_timeout_secs: 10,
+            parallel_dirs: 1,
         };
         let token = CancellationToken::new();
         let stats = Arc::new(PipelineStats::default());
@@ -656,6 +712,9 @@ mod tests {
             walk_retry_delay_ms: 10,
             uid_cycle: false,
             max_uid_attempts: 5,
+            nfs_timeout_secs: 30,
+            connect_timeout_secs: 10,
+            parallel_dirs: 1,
         };
         let token = CancellationToken::new();
         let stats = Arc::new(PipelineStats::default());
@@ -709,6 +768,9 @@ mod tests {
             walk_retry_delay_ms: 10,
             uid_cycle: false,
             max_uid_attempts: 5,
+            nfs_timeout_secs: 30,
+            connect_timeout_secs: 10,
+            parallel_dirs: 1,
         };
         let token = CancellationToken::new();
         let stats = Arc::new(PipelineStats::default());

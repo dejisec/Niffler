@@ -4,13 +4,42 @@ scope = "ContentsEnumeration"
 match_location = "FileContentAsString"
 match_type = "Regex"
 patterns = [
-    '\$[156y]\$[^\s:]{8,}',
-    '(?i)(ALL\s*=\s*\(ALL\)|NOPASSWD)',
-    '(?i)(mysql|postgres|root|admin):[^:]*:\d+:\d+:',
-    '(?i)StrictHostKeyChecking\s+(no|accept-new)',
+    # Full /etc/shadow line format (most reliable)
+    '^[^:\s]+:\$[1-9y]\$[A-Za-z0-9./$=]{16,}:\d+:',
+
+    # Standalone crypt(3) hash: $id$[rounds=N$]salt$hash
+    # Salt = [A-Za-z0-9./] 4-16 chars; hash = [A-Za-z0-9./] min 16 chars
+    '\$[1-9y]\$(?:rounds=\d+\$)?[A-Za-z0-9./]{4,16}\$[A-Za-z0-9./]{16,}',
+
+    # bcrypt hash: $2a$, $2b$, $2x$, $2y$ with 2-digit cost and 53-char hash
+    '\$2[abxy]\$\d{2}\$[A-Za-z0-9./]{53}',
+
+    # Sudoers NOPASSWD directive
+    '(?i)\bNOPASSWD\s*:',
+    '(?i)\bALL\s*=\s*\(ALL(?::ALL)?\)',
 ]
 action = "Snaffle"
 triage = "Red"
+skip_comments = true
+exclude_file_paths = [
+    '(?i)\.(trc|trm|pod|[1-9])$',
+    '(?i)/perl/man/',
+    '(?i)/usr/share/doc/',
+    '(?i)/diag/rdbms/.*/trace/',
+]
 max_size = 1048576
 context_bytes = 200
-description = "Linux-specific secrets -- shadow hashes, sudoers directives, insecure SSH config"
+description = "Linux secrets -- shadow hashes, sudoers directives"
+
+[[rules]]
+name = "LinuxMisconfigurations"
+scope = "ContentsEnumeration"
+match_location = "FileContentAsString"
+match_type = "Regex"
+patterns = ['(?i)StrictHostKeyChecking\s+(no|accept-new)']
+action = "Snaffle"
+triage = "Yellow"
+skip_comments = true
+max_size = 1048576
+context_bytes = 200
+description = "Insecure SSH configuration -- misconfiguration, not credential"

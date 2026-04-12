@@ -65,6 +65,10 @@ const DEFAULT_RULES: &[(&str, &str)] = &[
         "content/network.toml",
         include_str!("../../rules/content/network.toml"),
     ),
+    (
+        "content/wireguard.toml",
+        include_str!("../../rules/content/wireguard.toml"),
+    ),
 ];
 
 /// Load all embedded default rules compiled into the binary.
@@ -81,7 +85,7 @@ pub fn load_embedded_defaults() -> Result<Vec<ClassifierRule>> {
 /// Load all `.toml` rule files from a directory (recursive).
 pub fn load_rules_from_dir(dir: &Path) -> Result<Vec<ClassifierRule>> {
     let mut rules = Vec::new();
-    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(dir).into_iter().filter_map(Result::ok) {
         let path = entry.path();
         if path.extension().is_some_and(|ext| ext == "toml") {
             let content = std::fs::read_to_string(path)
@@ -96,6 +100,7 @@ pub fn load_rules_from_dir(dir: &Path) -> Result<Vec<ClassifierRule>> {
 
 /// Merge extra rules into base rules. Same-name rules in extra replace base rules;
 /// new names are appended.
+#[must_use]
 pub fn merge_rules(base: Vec<ClassifierRule>, extra: Vec<ClassifierRule>) -> Vec<ClassifierRule> {
     let mut name_to_index: HashMap<String, usize> = HashMap::new();
     let mut merged: Vec<ClassifierRule> = Vec::with_capacity(base.len() + extra.len());
@@ -140,6 +145,9 @@ mod tests {
             max_size: None,
             context_bytes: None,
             description: None,
+            exclude_patterns: None,
+            skip_comments: None,
+            exclude_file_paths: None,
         }
     }
 
@@ -187,6 +195,34 @@ mod tests {
         engine
             .validate_scope_location()
             .expect("all scope/location combos valid in embedded defaults");
+    }
+
+    #[test]
+    fn embedded_defaults_exclude_file_paths_only_on_content_rules() {
+        let rules = load_embedded_defaults().unwrap();
+        for rule in &rules {
+            if rule.exclude_file_paths.is_some() {
+                assert_eq!(
+                    rule.scope,
+                    EnumerationScope::ContentsEnumeration,
+                    "rule '{}' has exclude_file_paths but is not a content rule",
+                    rule.name
+                );
+                assert_eq!(
+                    rule.match_location,
+                    MatchLocation::FileContentAsString,
+                    "rule '{}' has exclude_file_paths but match_location is not FileContentAsString",
+                    rule.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn embedded_defaults_exclude_file_paths_regexes_compile() {
+        let rules = load_embedded_defaults().unwrap();
+        RuleEngine::compile(rules)
+            .expect("all embedded defaults including exclude_file_paths should compile");
     }
 
     #[test]

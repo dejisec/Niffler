@@ -94,6 +94,7 @@ impl TextMatcher {
     }
 
     /// Returns true if any compiled pattern matches the input.
+    #[must_use]
     pub fn is_match(&self, input: &str) -> bool {
         match &self.inner {
             MatcherInner::Exact(patterns) => patterns.iter().any(|p| p == input),
@@ -110,12 +111,13 @@ impl TextMatcher {
     }
 
     /// Returns the byte `(start, end)` of the first match, or `None`.
+    #[must_use]
     pub fn find_match(&self, input: &str) -> Option<(usize, usize)> {
         match &self.inner {
             MatcherInner::Exact(patterns) => {
                 for p in patterns {
-                    if let Some(pos) = input.find(p.as_str()) {
-                        return Some((pos, pos + p.len()));
+                    if p == input {
+                        return Some((0, input.len()));
                     }
                 }
                 None
@@ -156,6 +158,7 @@ impl TextMatcher {
     }
 
     /// Returns true if any compiled pattern matches the byte input.
+    #[must_use]
     pub fn is_match_bytes(&self, input: &[u8]) -> bool {
         match &self.inner {
             MatcherInner::Exact(patterns) => patterns.iter().any(|p| p.as_bytes() == input),
@@ -175,6 +178,7 @@ impl TextMatcher {
     }
 
     /// Returns the byte `(start, end)` of the first match on byte input, or `None`.
+    #[must_use]
     pub fn find_match_bytes(&self, input: &[u8]) -> Option<(usize, usize)> {
         match &self.inner {
             MatcherInner::Exact(patterns) => {
@@ -228,6 +232,7 @@ impl TextMatcher {
     }
 
     /// Returns the source pattern string of the first matching pattern on byte input, or `None`.
+    #[must_use]
     pub fn matched_pattern_str_bytes(&self, input: &[u8]) -> Option<String> {
         match &self.inner {
             MatcherInner::Exact(patterns) => {
@@ -261,6 +266,7 @@ impl TextMatcher {
     }
 
     /// Returns the source pattern string of the first matching pattern, or `None`.
+    #[must_use]
     pub fn matched_pattern_str(&self, input: &str) -> Option<String> {
         match &self.inner {
             MatcherInner::Exact(patterns) => patterns.iter().find(|p| *p == input).cloned(),
@@ -407,6 +413,32 @@ mod tests {
             m.matched_pattern_str_bytes(b"\x00magic\x00"),
             Some(s("magic"))
         );
+    }
+
+    #[test]
+    fn exact_find_match_requires_full_equality() {
+        let m = TextMatcher::new(&MatchType::Exact, &[s("id_rsa")]).unwrap();
+        assert!(
+            m.find_match("my_id_rsa_file").is_none(),
+            "Exact find_match should not match substring"
+        );
+        assert_eq!(m.find_match("id_rsa"), Some((0, 6)));
+    }
+
+    #[test]
+    fn exact_is_match_and_find_match_agree() {
+        let m = TextMatcher::new(&MatchType::Exact, &[s("id_rsa"), s("id_ecdsa")]).unwrap();
+        assert!(m.is_match("id_rsa"));
+        assert!(m.find_match("id_rsa").is_some());
+
+        assert!(m.is_match("id_ecdsa"));
+        assert!(m.find_match("id_ecdsa").is_some());
+
+        assert!(!m.is_match("id_rsa.pub"));
+        assert!(m.find_match("id_rsa.pub").is_none());
+
+        assert!(!m.is_match("my_id_rsa"));
+        assert!(m.find_match("my_id_rsa").is_none());
     }
 
     /// Helper to create owned strings for pattern slices.

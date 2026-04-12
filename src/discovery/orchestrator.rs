@@ -16,9 +16,9 @@ use crate::nfs::auth::AuthCreds;
 use crate::nfs::connector::NfsConnector;
 use crate::nfs::types::{NfsExport, NfsVersion};
 use crate::nfs::v3::Nfs3Connector;
-use crate::pipeline::{ExportMsg, PipelineStats, ResultMsg};
+use crate::pipeline::{ExportMsg, PipelineStats, ResultMsg, RetryPolicy};
 
-/// Retry an async operation with linear backoff.
+/// Retry an async operation with exponential backoff and jitter.
 async fn retry_with_backoff<F, Fut, T>(
     max_retries: usize,
     base_delay: Duration,
@@ -28,6 +28,7 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T>>,
 {
+    let policy = RetryPolicy::new(base_delay, Duration::from_secs(30), max_retries);
     let mut last_err = None;
     for attempt in 0..=max_retries {
         match op().await {
@@ -35,7 +36,7 @@ where
             Err(e) => {
                 last_err = Some(e);
                 if attempt < max_retries {
-                    tokio::time::sleep(base_delay * (attempt as u32 + 1)).await;
+                    tokio::time::sleep(policy.delay_for_attempt(attempt)).await;
                 }
             }
         }
@@ -57,6 +58,8 @@ async fn process_host_exports(
     stats: &PipelineStats,
     rules: &RuleEngine,
     check_subtree: bool,
+    connect_timeout: Duration,
+    proxy: Option<std::net::SocketAddr>,
 ) -> Result<()> {
     stats.inc_hosts_scanned();
 
@@ -75,17 +78,37 @@ async fn process_host_exports(
             return Ok(());
         }
 
-        let harvested_uids =
-            super::uid_harvest::harvest_uids(connector, host, &nfs_export.path, &primary_creds)
-                .await;
-
-        let misconfigs = super::misconfig::detect_misconfigurations(
-            connector,
-            host,
-            &nfs_export.path,
-            check_subtree,
+        let harvested_uids = match tokio::time::timeout(
+            connect_timeout,
+            super::uid_harvest::harvest_uids(connector, host, &nfs_export.path, &primary_creds),
         )
-        .await;
+        .await
+        {
+            Ok(uids) => uids,
+            Err(_elapsed) => {
+                tracing::warn!(host = %host, export = %nfs_export.path, "UID harvest timed out");
+                Vec::new()
+            }
+        };
+
+        let misconfigs = match tokio::time::timeout(
+            connect_timeout,
+            super::misconfig::detect_misconfigurations(
+                connector,
+                host,
+                &nfs_export.path,
+                check_subtree,
+                proxy,
+            ),
+        )
+        .await
+        {
+            Ok(m) => m,
+            Err(_elapsed) => {
+                tracing::warn!(host = %host, export = %nfs_export.path, "misconfiguration detection timed out");
+                Vec::new()
+            }
+        };
 
         let access_options = super::exports::parse_access_options(&nfs_export);
 
@@ -198,12 +221,13 @@ pub async fn run(
         let rules = Arc::clone(&rules);
         let mode = config.mode;
         let timeout_secs = config.discovery.timeout_secs;
+        let connect_timeout = Duration::from_secs(config.discovery.connect_timeout_secs);
         let check_subtree = config.scanner.check_subtree_bypass;
+        let task_proxy = proxy;
 
         set.spawn(async move {
-            let _permit = match sem.acquire().await {
-                Ok(p) => p,
-                Err(_) => return,
+            let Ok(_permit) = sem.acquire().await else {
+                return;
             };
 
             // Determine export list and NFS version based on port scan
@@ -254,6 +278,8 @@ pub async fn run(
                 &stats,
                 &rules,
                 check_subtree,
+                connect_timeout,
+                task_proxy,
             )
             .await
             {
@@ -365,6 +391,8 @@ mod tests {
             &stats,
             &RuleEngine::compile(vec![]).unwrap(),
             false,
+            Duration::from_secs(10),
+            None,
         )
         .await
         .unwrap();
@@ -406,6 +434,8 @@ mod tests {
             &stats,
             &RuleEngine::compile(vec![]).unwrap(),
             false,
+            Duration::from_secs(10),
+            None,
         )
         .await
         .unwrap();
@@ -417,7 +447,7 @@ mod tests {
 
     #[tokio::test]
     async fn orchestrator_attaches_misconfigs() {
-        // Mock that succeeds for all connections (including root UID 0) → NoRootSquash detected
+        // Mock that succeeds for all connections (including root UID 0) → PossibleNoRootSquash detected
         let mut mock = MockNfsConnector::new();
         mock.expect_connect().returning(|_, _, _| {
             let mut ops = MockNfsOps::new();
@@ -459,6 +489,8 @@ mod tests {
             &stats,
             &RuleEngine::compile(vec![]).unwrap(),
             false,
+            Duration::from_secs(10),
+            None,
         )
         .await
         .unwrap();
@@ -467,7 +499,7 @@ mod tests {
         let msg = export_rx.recv().await.unwrap();
         assert!(
             msg.misconfigs
-                .contains(&crate::nfs::types::Misconfiguration::NoRootSquash)
+                .contains(&crate::nfs::types::Misconfiguration::PossibleNoRootSquash)
         );
     }
 
@@ -517,6 +549,8 @@ mod tests {
             &stats,
             &RuleEngine::compile(vec![]).unwrap(),
             false,
+            Duration::from_secs(10),
+            None,
         )
         .await
         .unwrap();
@@ -532,7 +566,7 @@ mod tests {
 
     #[tokio::test]
     async fn orchestrator_recon_mode_sends_result_msg() {
-        // Mock that exposes no_root_squash
+        // Mock that exposes possible_no_root_squash
         let mut mock = MockNfsConnector::new();
         mock.expect_connect().returning(|_, _, _| {
             let mut ops = MockNfsOps::new();
@@ -574,6 +608,8 @@ mod tests {
             &stats,
             &RuleEngine::compile(vec![]).unwrap(),
             false,
+            Duration::from_secs(10),
+            None,
         )
         .await
         .unwrap();
@@ -583,9 +619,13 @@ mod tests {
         while let Some(msg) = result_rx.recv().await {
             msgs.push(msg);
         }
-        // Should have ResultMsg for NoRootSquash and InsecureExport
+        // Should have ResultMsg for PossibleNoRootSquash (insecure_export may not appear
+        // in unit tests since check_insecure_export makes real TCP connections)
         assert!(!msgs.is_empty());
-        assert!(msgs.iter().any(|m| m.rule_name.contains("no_root_squash")));
+        assert!(
+            msgs.iter()
+                .any(|m| m.rule_name.contains("possible_no_root_squash"))
+        );
     }
 
     #[tokio::test]
@@ -609,6 +649,8 @@ mod tests {
             &stats,
             &RuleEngine::compile(vec![]).unwrap(),
             false,
+            Duration::from_secs(10),
+            None,
         )
         .await
         .unwrap();
@@ -637,6 +679,8 @@ mod tests {
             &stats,
             &RuleEngine::compile(vec![]).unwrap(),
             false,
+            Duration::from_secs(10),
+            None,
         )
         .await
         .unwrap();

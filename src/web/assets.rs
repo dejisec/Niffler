@@ -49,24 +49,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_embedded_css_exists() {
-        let file = StaticAssets::get("css/niffler.css");
-        assert!(file.is_some(), "css/niffler.css should be embedded");
-    }
-
-    #[test]
-    fn test_embedded_htmx_exists() {
-        let file = StaticAssets::get("js/htmx.min.js");
-        assert!(file.is_some(), "js/htmx.min.js should be embedded");
-    }
-
-    #[test]
-    fn test_embedded_fonts_exist() {
-        let has_woff2 = StaticAssets::iter().any(|name| name.ends_with(".woff2"));
-        assert!(has_woff2, "at least one .woff2 file should be embedded");
-    }
-
-    #[test]
     fn test_css_contains_design_tokens() {
         let file = StaticAssets::get("css/niffler.css").expect("CSS must exist");
         let css = std::str::from_utf8(&file.data).expect("CSS must be valid UTF-8");

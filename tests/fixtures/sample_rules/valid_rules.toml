@@ -57,7 +57,8 @@ scope = "FileEnumeration"
 match_location = "FileName"
 match_type = "Regex"
 patterns = ["(?i)\\.pem$", "(?i)\\.key$"]
-action = "CheckForKeys"
+action = "Snaffle"
+triage = "Black"
 description = "Check PEM/key files for key material"
 
 [[rules]]

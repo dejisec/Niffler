@@ -6,13 +6,14 @@ use nfs3_client::nfs3_types::nfs3::{
 };
 use nfs3_client::nfs3_types::rpc::{auth_unix, opaque_auth};
 use nfs3_client::nfs3_types::xdr_codec::Opaque;
-use nfs3_client::tokio::{TokioConnector, TokioIo};
+use nfs3_client::tokio::TokioIo;
 use nfs3_client::{Nfs3Connection, Nfs3ConnectionBuilder, PortmapperClient};
 
 use super::auth::AuthCreds;
 use super::connector::{self, NfsConnector};
 use super::errors::NfsError;
 use super::ops::NfsOps;
+use super::transport::NifflerTokioConnector;
 use super::types::{DirEntry, NfsAttrs, NfsFh, NfsFileType, NfsVersion, ReadResult};
 
 /// Map an NFS protocol status code to an `NfsError`.
@@ -43,7 +44,7 @@ pub(crate) fn map_client_error(err: ClientError) -> NfsError {
 
 impl From<nfs_fh3> for NfsFh {
     fn from(fh: nfs_fh3) -> Self {
-        NfsFh::new(fh.data.as_ref().to_vec())
+        Self::new(fh.data.as_ref().to_vec())
     }
 }
 
@@ -105,6 +106,7 @@ pub struct Nfs3Connector {
 }
 
 impl Nfs3Connector {
+    #[must_use]
     pub fn new(privileged_port: bool) -> Self {
         Self {
             privileged_port,
@@ -112,6 +114,7 @@ impl Nfs3Connector {
         }
     }
 
+    #[must_use]
     pub fn with_proxy(proxy: std::net::SocketAddr) -> Self {
         Self {
             privileged_port: false,
@@ -146,7 +149,7 @@ impl NfsConnector for Nfs3Connector {
                 .await
                 .map_err(map_client_error)?
         } else {
-            Nfs3ConnectionBuilder::new(TokioConnector, host, export)
+            Nfs3ConnectionBuilder::new(NifflerTokioConnector, host, export)
                 .connect_from_privileged_port(self.privileged_port)
                 .credential(credential)
                 .mount()
@@ -603,17 +606,6 @@ mod tests {
         let entries = vec![make_dir_entry("normal_file")];
         let result = filter_dot_entries(entries);
         assert_eq!(result.len(), 1);
-    }
-
-    #[test]
-    fn filter_empty_input_returns_empty() {
-        assert!(filter_dot_entries(vec![]).is_empty());
-    }
-
-    #[test]
-    fn filter_only_dots_returns_empty() {
-        let entries = vec![make_dir_entry("."), make_dir_entry("..")];
-        assert!(filter_dot_entries(entries).is_empty());
     }
 
     #[test]

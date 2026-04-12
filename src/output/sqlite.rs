@@ -20,6 +20,7 @@ impl SqliteWriter {
     /// a new scan session.
     pub async fn new(path: &Path, targets: &[String], mode: &str) -> Result<Self> {
         let db = Database::open(path).await?;
+        db.disable_fts_triggers().await?;
         let scan_id = db.create_scan(targets, mode).await?;
         Ok(Self { db, scan_id })
     }
@@ -30,12 +31,20 @@ impl SqliteWriter {
         self.db.insert_finding(self.scan_id, msg).await
     }
 
+    /// Insert a batch of findings in a single transaction.
+    pub async fn write_batch(&self, msgs: &[ResultMsg]) -> Result<()> {
+        self.db.insert_findings_batch(self.scan_id, msgs).await
+    }
+
     /// Mark the scan as completed with final pipeline statistics.
     pub async fn finish(&self, stats: &PipelineStats) -> Result<()> {
+        self.db.rebuild_fts_index().await?;
+        self.db.enable_fts_triggers().await?;
         self.db.complete_scan(self.scan_id, stats).await
     }
 
     /// Access the underlying database (for test assertions).
+    #[must_use]
     pub fn db(&self) -> &Database {
         &self.db
     }
@@ -45,7 +54,7 @@ impl SqliteWriter {
 mod tests {
     use super::*;
     use crate::classifier::Triage;
-    use crate::pipeline::ResultMsg;
+    use crate::pipeline::{PipelineStats, ResultMsg};
     use crate::web::db::FindingsQuery;
     use chrono::Utc;
 
@@ -133,5 +142,77 @@ mod tests {
             count, 1,
             "duplicate finding should be deduplicated by DB UNIQUE constraint"
         );
+    }
+
+    #[tokio::test]
+    async fn sqlite_write_batch() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let writer = SqliteWriter::new(tmp.path(), &[], "scan").await.unwrap();
+
+        let msgs: Vec<ResultMsg> = (0..50)
+            .map(|i| make_msg(&format!("Rule{i}"), &format!("file{i}.txt")))
+            .collect();
+
+        writer.write_batch(&msgs).await.unwrap();
+
+        let count = writer
+            .db()
+            .count_findings(&FindingsQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(count, 50);
+    }
+
+    #[tokio::test]
+    async fn sqlite_writer_defers_fts_and_rebuilds_on_finish() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let writer = SqliteWriter::new(tmp.path(), &[], "scan").await.unwrap();
+
+        // FTS trigger should be disabled during scan
+        let has_trigger: bool = writer
+            .db()
+            .conn
+            .call(|conn| {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='findings_fts_insert'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                Ok::<_, rusqlite::Error>(count > 0)
+            })
+            .await
+            .unwrap();
+        assert!(!has_trigger, "FTS trigger should be disabled during scan");
+
+        // Insert a finding
+        writer.write(&make_msg("SSHKey", "id_rsa")).await.unwrap();
+
+        // FTS search should NOT find it yet (trigger disabled)
+        let results = writer
+            .db()
+            .list_findings(&FindingsQuery {
+                q: Some("ssh".into()),
+                per_page: 100,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(results.is_empty(), "FTS should be empty during scan");
+
+        // Finish rebuilds FTS
+        let stats = PipelineStats::default();
+        writer.finish(&stats).await.unwrap();
+
+        // Now FTS search should work
+        let db = crate::web::db::Database::open(tmp.path()).await.unwrap();
+        let results = db
+            .list_findings(&FindingsQuery {
+                q: Some("ssh".into()),
+                per_page: 100,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1, "FTS should find the row after finish");
     }
 }

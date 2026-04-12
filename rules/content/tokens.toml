@@ -23,6 +23,10 @@ patterns = [
 ]
 action = "Snaffle"
 triage = "Red"
+skip_comments = true
+exclude_patterns = [
+    '(?i)(example|sample|placeholder|your.?token|test.?token|dummy|CHANGE.?ME)',
+]
 max_size = 1048576
 context_bytes = 200
 description = "SaaS tokens and webhooks -- Slack, GitHub, GitLab, Discord, JWT"

@@ -52,6 +52,16 @@ pub struct ClassifierRule {
     pub max_size: Option<u64>,
     pub context_bytes: Option<usize>,
     pub description: Option<String>,
+    /// Regex patterns checked against the matched line; any hit suppresses the finding.
+    /// Only valid on `ContentsEnumeration` / `FileContentAsString` rules.
+    pub exclude_patterns: Option<Vec<String>>,
+    /// When true, skip matches on lines starting with comment markers (#, //, --, ;, etc.).
+    /// Only valid on `ContentsEnumeration` / `FileContentAsString` rules.
+    pub skip_comments: Option<bool>,
+    /// Regex patterns checked against the file's path; any hit suppresses the finding.
+    /// Only valid on `ContentsEnumeration` / `FileContentAsString` rules.
+    /// Evaluated after `exclude_patterns`.
+    pub exclude_file_paths: Option<Vec<String>>,
 }
 
 /// Wrapper for TOML `[[rules]]` array-of-tables deserialization.
@@ -164,6 +174,88 @@ triage = "Yellow"
         assert!(rule.max_size.is_none());
         assert!(rule.context_bytes.is_none());
         assert!(rule.description.is_none());
+    }
+
+    #[test]
+    fn toml_roundtrip_rule_with_exclude_patterns() {
+        let toml_str = r#"
+[[rules]]
+name = "CredentialPatterns"
+scope = "ContentsEnumeration"
+match_location = "FileContentAsString"
+match_type = "Regex"
+patterns = ['(?i)password\s*[=:]']
+action = "Snaffle"
+triage = "Red"
+skip_comments = true
+exclude_patterns = ['(?i)changeme', '\$\{', '\{\{']
+"#;
+        let rule_file: RuleFile = toml::from_str(toml_str).unwrap();
+        let rule = &rule_file.rules[0];
+
+        assert_eq!(rule.skip_comments, Some(true));
+        let excludes = rule.exclude_patterns.as_ref().unwrap();
+        assert_eq!(excludes.len(), 3);
+        assert_eq!(excludes[0], "(?i)changeme");
+    }
+
+    #[test]
+    fn toml_roundtrip_rule_without_new_fields_defaults_to_none() {
+        let toml_str = r#"
+[[rules]]
+name = "Simple"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = ["id_rsa"]
+action = "Snaffle"
+triage = "Black"
+"#;
+        let rule_file: RuleFile = toml::from_str(toml_str).unwrap();
+        let rule = &rule_file.rules[0];
+
+        assert!(rule.exclude_patterns.is_none());
+        assert!(rule.skip_comments.is_none());
+    }
+
+    #[test]
+    fn toml_roundtrip_rule_with_exclude_file_paths() {
+        let toml_str = r#"
+[[rules]]
+name = "CredentialPatterns"
+scope = "ContentsEnumeration"
+match_location = "FileContentAsString"
+match_type = "Regex"
+patterns = ['(?i)password\s*[=:]']
+action = "Snaffle"
+triage = "Red"
+exclude_file_paths = ['(?i)/perl/man/', '(?i)\.trc$']
+"#;
+        let rule_file: RuleFile = toml::from_str(toml_str).unwrap();
+        let rule = &rule_file.rules[0];
+
+        let excludes = rule.exclude_file_paths.as_ref().unwrap();
+        assert_eq!(excludes.len(), 2);
+        assert_eq!(excludes[0], "(?i)/perl/man/");
+        assert_eq!(excludes[1], "(?i)\\.trc$");
+    }
+
+    #[test]
+    fn toml_roundtrip_rule_without_exclude_file_paths_defaults_to_none() {
+        let toml_str = r#"
+[[rules]]
+name = "Simple"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = ["id_rsa"]
+action = "Snaffle"
+triage = "Black"
+"#;
+        let rule_file: RuleFile = toml::from_str(toml_str).unwrap();
+        let rule = &rule_file.rules[0];
+
+        assert!(rule.exclude_file_paths.is_none());
     }
 
     #[test]

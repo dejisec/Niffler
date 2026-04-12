@@ -3,6 +3,6 @@ pub mod settings;
 
 pub use cli::{Cli, NifflerCommand, ScanArgs};
 pub use settings::{
-    DiscoveryConfig, ExportFormat, NifflerConfig, OperatingMode, OutputConfig, ScannerConfig,
-    WalkerConfig,
+    DiscoveryConfig, ExportFormat, HealthConfig, NifflerConfig, OperatingMode, OutputConfig,
+    ScannerConfig, WalkerConfig,
 };

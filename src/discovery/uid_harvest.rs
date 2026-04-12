@@ -4,6 +4,7 @@ use crate::nfs::auth::AuthCreds;
 use crate::nfs::connector::NfsConnector;
 use crate::nfs::types::DirEntry;
 
+#[must_use]
 pub fn extract_unique_creds(entries: &[DirEntry]) -> Vec<AuthCreds> {
     let unique: HashSet<(u32, u32)> = entries.iter().map(|e| (e.attrs.uid, e.attrs.gid)).collect();
     unique

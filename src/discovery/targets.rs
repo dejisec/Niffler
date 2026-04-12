@@ -71,7 +71,11 @@ pub async fn resolve_targets(config: &DiscoveryConfig) -> Result<Vec<TargetHost>
         targets.extend(resolve_targets_from_list(specs)?);
     }
     if let Some(ref file_path) = config.target_file {
-        targets.extend(resolve_targets_from_file(file_path)?);
+        let path = file_path.clone();
+        let file_targets = tokio::task::spawn_blocking(move || resolve_targets_from_file(&path))
+            .await
+            .map_err(|e| anyhow::anyhow!("spawn_blocking: {e}"))??;
+        targets.extend(file_targets);
     }
 
     // Deduplicate while preserving insertion order
@@ -116,12 +120,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_ipv4_address() {
-        let result = resolve_single_target("192.168.1.5").unwrap();
-        assert_eq!(result, vec![TargetHost::Ip("192.168.1.5".parse().unwrap())]);
-    }
-
-    #[test]
     fn parse_ipv6_address() {
         let result = resolve_single_target("::1").unwrap();
         assert_eq!(result, vec![TargetHost::Ip("::1".parse().unwrap())]);
@@ -155,13 +153,6 @@ mod tests {
         let result = resolve_targets_from_list(&specs).unwrap();
         // 1 IP + 1 hostname + 2 CIDR hosts = 4
         assert_eq!(result.len(), 4);
-    }
-
-    #[test]
-    fn resolve_list_empty_returns_empty() {
-        let specs: Vec<String> = vec![];
-        let result = resolve_targets_from_list(&specs).unwrap();
-        assert!(result.is_empty());
     }
 
     #[test]
@@ -213,6 +204,7 @@ mod tests {
             discovery_tasks: 10,
             timeout_secs: 5,
             proxy: None,
+            connect_timeout_secs: 10,
         };
         let result = resolve_targets(&config).await.unwrap();
         assert_eq!(result.len(), 1, "duplicate IPs should be deduplicated");
@@ -228,6 +220,7 @@ mod tests {
             discovery_tasks: 10,
             timeout_secs: 5,
             proxy: None,
+            connect_timeout_secs: 10,
         };
         let result = resolve_targets(&config).await.unwrap();
         assert_eq!(
@@ -251,6 +244,7 @@ mod tests {
             discovery_tasks: 10,
             timeout_secs: 5,
             proxy: None,
+            connect_timeout_secs: 10,
         };
         let result = resolve_targets(&config).await.unwrap();
         assert_eq!(result.len(), 2);

@@ -27,7 +27,7 @@ pub struct FileEntry {
 }
 
 /// A classifier finding — a rule matched with a severity.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
     pub triage: Triage,
     pub rule_name: String,
@@ -41,7 +41,6 @@ pub enum RuleResult {
     Snaffle(Finding),
     Discard,
     Relay(Vec<String>),
-    CheckForKeys,
     NoMatch,
 }
 
@@ -61,6 +60,14 @@ pub struct RuleEngine {
 
     /// Compiled matchers keyed by rule name.
     matchers: HashMap<String, TextMatcher>,
+
+    /// Compiled exclude-pattern matchers keyed by rule name.
+    /// Only populated for rules with `exclude_patterns`.
+    exclude_matchers: HashMap<String, TextMatcher>,
+
+    /// Compiled file-path exclude matchers keyed by rule name.
+    /// Only populated for content rules with `exclude_file_paths`.
+    exclude_path_matchers: HashMap<String, TextMatcher>,
 }
 
 impl RuleEngine {
@@ -75,11 +82,66 @@ impl RuleEngine {
         let mut content_rules = Vec::new();
         let mut rule_index = HashMap::new();
         let mut matchers = HashMap::new();
+        let mut exclude_matchers = HashMap::new();
+        let mut exclude_path_matchers = HashMap::new();
 
         for rule in rules {
+            // Validate exclude_patterns / skip_comments are only on content string rules.
+            let has_exclusion_fields =
+                rule.exclude_patterns.is_some() || rule.skip_comments.unwrap_or(false);
+            if has_exclusion_fields
+                && !(rule.scope == EnumerationScope::ContentsEnumeration
+                    && rule.match_location == MatchLocation::FileContentAsString)
+            {
+                bail!(
+                    "rule '{}': exclude_patterns/skip_comments are only valid on \
+                     ContentsEnumeration/FileContentAsString rules",
+                    rule.name
+                );
+            }
+
+            // Validate exclude_file_paths is only on content string rules.
+            if rule.exclude_file_paths.is_some()
+                && !(rule.scope == EnumerationScope::ContentsEnumeration
+                    && rule.match_location == MatchLocation::FileContentAsString)
+            {
+                bail!(
+                    "rule '{}': exclude_file_paths is only valid on \
+                     ContentsEnumeration/FileContentAsString rules",
+                    rule.name
+                );
+            }
+
             let matcher = TextMatcher::new(&rule.match_type, &rule.patterns)
                 .with_context(|| format!("failed to compile matcher for rule '{}'", rule.name))?;
             matchers.insert(rule.name.clone(), matcher);
+
+            // Compile exclude patterns if present.
+            if let Some(ref excludes) = rule.exclude_patterns {
+                let exclude_matcher = TextMatcher::new(&super::rule::MatchType::Regex, excludes)
+                    .with_context(|| {
+                        format!(
+                            "failed to compile exclude patterns for rule '{}'",
+                            rule.name
+                        )
+                    })?;
+                exclude_matchers.insert(rule.name.clone(), exclude_matcher);
+            }
+
+            // Compile exclude_file_paths regexes if present.
+            if let Some(ref path_excludes) = rule.exclude_file_paths {
+                let path_exclude_matcher =
+                    TextMatcher::new(&super::rule::MatchType::Regex, path_excludes).with_context(
+                        || {
+                            format!(
+                                "failed to compile exclude_file_paths for rule '{}'",
+                                rule.name
+                            )
+                        },
+                    )?;
+                exclude_path_matchers.insert(rule.name.clone(), path_exclude_matcher);
+            }
+
             if rule_index.contains_key(&rule.name) {
                 bail!("duplicate rule name: '{}'", rule.name);
             }
@@ -105,6 +167,8 @@ impl RuleEngine {
             content_rules,
             rule_index,
             matchers,
+            exclude_matchers,
+            exclude_path_matchers,
         })
     }
 
@@ -172,38 +236,70 @@ impl RuleEngine {
         Ok(())
     }
 
+    #[must_use]
     pub fn share_rules(&self) -> &[ClassifierRule] {
         &self.share_rules
     }
 
+    #[must_use]
     pub fn dir_rules(&self) -> &[ClassifierRule] {
         &self.dir_rules
     }
 
+    #[must_use]
     pub fn file_rules(&self) -> &[ClassifierRule] {
         &self.file_rules
     }
 
+    #[must_use]
     pub fn content_rules(&self) -> &[ClassifierRule] {
         &self.content_rules
     }
 
+    #[must_use]
     pub fn rule_count(&self) -> usize {
         self.rule_index.len()
     }
 
+    #[must_use]
     pub fn matcher(&self, rule_name: &str) -> Option<&TextMatcher> {
         self.matchers.get(rule_name)
     }
 
     /// Returns the `context_bytes` setting for a rule, if defined.
+    #[must_use]
     pub fn context_bytes(&self, rule_name: &str) -> Option<usize> {
         self.rule_index.get(rule_name).and_then(|r| r.context_bytes)
     }
 
     /// Returns the match location for a rule, if defined.
+    #[must_use]
     pub fn match_location(&self, rule_name: &str) -> Option<&MatchLocation> {
         self.rule_index.get(rule_name).map(|r| &r.match_location)
+    }
+
+    /// Evaluate content rules directly against a file entry and content buffer,
+    /// bypassing file-rule discards, relays, and the `bak` secondary pass.
+    ///
+    /// Intended for test drivers that need to exercise content-rule matching
+    /// (including `exclude_patterns` and `exclude_file_paths`) without being
+    /// short-circuited by extension-based discards. Unlike [`evaluate_file`],
+    /// `content` is non-optional: this method is meaningless without content.
+    ///
+    /// Only surfaces `RuleResult::Snaffle` findings. Content rules with a
+    /// `Relay` action are not followed here (the default rule set has no such
+    /// rules, but custom rulesets should be aware).
+    ///
+    /// [`evaluate_file`]: Self::evaluate_file
+    #[must_use]
+    pub fn evaluate_content_only(&self, entry: &FileEntry, content: &[u8]) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for rule in &self.content_rules {
+            if let RuleResult::Snaffle(f) = self.eval_rule(rule, entry, Some(content)) {
+                findings.push(f);
+            }
+        }
+        findings
     }
 
     /// Evaluate file enumeration rules, then follow relay chains.
@@ -211,17 +307,23 @@ impl RuleEngine {
     /// If the file has a `.bak` extension, a second pass re-evaluates
     /// extension-based rules using the underlying extension (e.g.,
     /// `secrets.kdbx.bak` is also evaluated as extension `kdbx`).
+    #[must_use]
     pub fn evaluate_file(&self, entry: &FileEntry, content: Option<&[u8]>) -> Vec<Finding> {
         let mut findings = Vec::new();
+        let mut had_relay_or_snaffle = false;
 
         for rule in &self.file_rules {
             match self.eval_rule(rule, entry, content) {
-                RuleResult::Snaffle(finding) => findings.push(finding),
+                RuleResult::Snaffle(finding) => {
+                    had_relay_or_snaffle = true;
+                    findings.push(finding);
+                }
                 RuleResult::Discard => return findings,
                 RuleResult::Relay(targets) => {
+                    had_relay_or_snaffle = true;
                     self.follow_relay(&targets, entry, content, &mut findings, 1);
                 }
-                RuleResult::CheckForKeys | RuleResult::NoMatch => {}
+                RuleResult::NoMatch => {}
             }
         }
 
@@ -235,12 +337,27 @@ impl RuleEngine {
                     continue;
                 }
                 match self.eval_rule(rule, &alt, content) {
-                    RuleResult::Snaffle(finding) => findings.push(finding),
+                    RuleResult::Snaffle(finding) => {
+                        had_relay_or_snaffle = true;
+                        findings.push(finding);
+                    }
                     RuleResult::Discard => return findings,
                     RuleResult::Relay(targets) => {
+                        had_relay_or_snaffle = true;
                         self.follow_relay(&targets, &alt, content, &mut findings, 1);
                     }
-                    RuleResult::CheckForKeys | RuleResult::NoMatch => {}
+                    RuleResult::NoMatch => {}
+                }
+            }
+        }
+
+        // Fallback: if no file rule produced a Relay or Snaffle and content is
+        // available, evaluate all content rules directly. This ensures files with
+        // unrecognised names/extensions still get content-scanned for secrets.
+        if !had_relay_or_snaffle && content.is_some() {
+            for rule in &self.content_rules {
+                if let RuleResult::Snaffle(f) = self.eval_rule(rule, entry, content) {
+                    findings.push(f);
                 }
             }
         }
@@ -249,6 +366,7 @@ impl RuleEngine {
     }
 
     /// Check whether an export path should be skipped during discovery.
+    #[must_use]
     pub fn should_discard_export(&self, export_path: &str) -> bool {
         for rule in &self.share_rules {
             if rule.action != MatchAction::Discard {
@@ -264,6 +382,7 @@ impl RuleEngine {
     }
 
     /// Check whether a directory should be pruned during tree walking.
+    #[must_use]
     pub fn should_discard_dir(&self, dir_name: &str, dir_path: &str) -> bool {
         for rule in &self.dir_rules {
             if rule.action != MatchAction::Discard {
@@ -295,16 +414,26 @@ impl RuleEngine {
             return RuleResult::NoMatch;
         }
 
-        let matcher = match self.matchers.get(&rule.name) {
-            Some(m) => m,
-            None => return RuleResult::NoMatch,
+        // Early file-path exclusion for content string rules. Runs before
+        // `matcher.is_match` on the full file content, so excluded paths pay
+        // no scanning cost. Compile-time validation ensures only
+        // FileContentAsString rules populate `exclude_path_matchers`; the
+        // match_location check is defensive.
+        if rule.match_location == MatchLocation::FileContentAsString
+            && let Some(path_matcher) = self.exclude_path_matchers.get(&rule.name)
+            && path_matcher.is_match(&entry.path)
+        {
+            return RuleResult::NoMatch;
+        }
+
+        let Some(matcher) = self.matchers.get(&rule.name) else {
+            return RuleResult::NoMatch;
         };
 
         // FileContentAsBytes: match directly on raw &[u8] without lossy conversion.
         if rule.match_location == MatchLocation::FileContentAsBytes {
-            let data = match content {
-                Some(d) => d,
-                None => return RuleResult::NoMatch,
+            let Some(data) = content else {
+                return RuleResult::NoMatch;
             };
             if !matcher.is_match_bytes(data) {
                 return RuleResult::NoMatch;
@@ -325,7 +454,6 @@ impl RuleEngine {
                 MatchAction::Relay => {
                     RuleResult::Relay(rule.relay_targets.clone().unwrap_or_default())
                 }
-                MatchAction::CheckForKeys => RuleResult::CheckForKeys,
             };
         }
 
@@ -349,7 +477,7 @@ impl RuleEngine {
                 &owned
             }
             MatchLocation::FileMode => {
-                owned = format!("{:o}", entry.mode & 0o7777);
+                owned = format!("{:04o}", entry.mode & 0o7777);
                 &owned
             }
             MatchLocation::FileContentAsString => match content {
@@ -367,6 +495,40 @@ impl RuleEngine {
             return RuleResult::NoMatch;
         }
 
+        // Post-match exclusion for content string rules: iterate through matches
+        // and skip those on comment lines or matching exclude patterns.
+        let has_exclusions = rule.match_location == MatchLocation::FileContentAsString
+            && (rule.skip_comments.unwrap_or(false)
+                || self.exclude_matchers.contains_key(&rule.name));
+        if has_exclusions {
+            let skip_comments = rule.skip_comments.unwrap_or(false);
+            let excl_matcher = self.exclude_matchers.get(&rule.name);
+
+            let mut search_from = 0;
+            let mut found_valid = false;
+            while search_from < input.len() {
+                let search_input = &input[search_from..];
+                let Some((_start, end)) = matcher.find_match(search_input) else {
+                    break;
+                };
+                let abs_start = search_from + _start;
+                let line = extract_matched_line(input, abs_start);
+
+                let excluded = (skip_comments && is_comment_line(line))
+                    || excl_matcher.is_some_and(|m| m.is_match(line));
+
+                if excluded {
+                    search_from += end.max(1);
+                    continue;
+                }
+                found_valid = true;
+                break;
+            }
+            if !found_valid {
+                return RuleResult::NoMatch;
+            }
+        }
+
         match &rule.action {
             MatchAction::Snaffle => {
                 let pat = matcher
@@ -381,7 +543,6 @@ impl RuleEngine {
             }
             MatchAction::Discard => RuleResult::Discard,
             MatchAction::Relay => RuleResult::Relay(rule.relay_targets.clone().unwrap_or_default()),
-            MatchAction::CheckForKeys => RuleResult::CheckForKeys,
         }
     }
 
@@ -410,11 +571,43 @@ impl RuleEngine {
                     RuleResult::Relay(more) => {
                         self.follow_relay(&more, entry, content, findings, depth + 1);
                     }
-                    RuleResult::CheckForKeys | RuleResult::NoMatch => {}
+                    RuleResult::NoMatch => {}
                 }
             }
         }
     }
+}
+
+/// Extract the line containing the match from a multi-line string.
+///
+/// Given the full input and a `(start, end)` byte range from the matcher,
+/// returns the full line (delimited by `\n`) that contains the match start.
+fn extract_matched_line(input: &str, match_start: usize) -> &str {
+    let bytes = input.as_bytes();
+    let line_start = match bytes[..match_start].iter().rposition(|&b| b == b'\n') {
+        Some(pos) => pos + 1,
+        None => 0,
+    };
+    let line_end = match bytes[match_start..].iter().position(|&b| b == b'\n') {
+        Some(pos) => match_start + pos,
+        None => input.len(),
+    };
+    &input[line_start..line_end]
+}
+
+/// Check whether a line (trimmed) starts with a common comment marker.
+fn is_comment_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with('#')
+        || trimmed.starts_with("//")
+        || trimmed.starts_with("--")
+        || trimmed.starts_with(';')
+        || trimmed.starts_with("/*")
+        || trimmed.starts_with("* ")
+        || trimmed.starts_with("*\t")
+        || trimmed.starts_with("<!--")
+        || trimmed.starts_with('%')
+        || trimmed.to_ascii_uppercase().starts_with("REM ")
 }
 
 /// Extract the underlying extension from a `.bak` filename.
@@ -480,6 +673,9 @@ mod tests {
             max_size: None,
             context_bytes: None,
             description: None,
+            exclude_patterns: None,
+            skip_comments: None,
+            exclude_file_paths: None,
         }
     }
 
@@ -1483,5 +1679,720 @@ mod tests {
             findings.is_empty(),
             "binary content should skip FileContentAsString rules"
         );
+    }
+
+    fn make_content_rule_with_exclusions(
+        name: &str,
+        patterns: Vec<String>,
+        exclude_patterns: Option<Vec<String>>,
+        skip_comments: Option<bool>,
+    ) -> ClassifierRule {
+        ClassifierRule {
+            name: name.to_string(),
+            scope: EnumerationScope::ContentsEnumeration,
+            match_location: MatchLocation::FileContentAsString,
+            match_type: MatchType::Regex,
+            patterns,
+            action: MatchAction::Snaffle,
+            triage: Some(Triage::Red),
+            relay_targets: None,
+            max_size: None,
+            context_bytes: None,
+            description: None,
+            exclude_patterns,
+            skip_comments,
+            exclude_file_paths: None,
+        }
+    }
+
+    #[test]
+    fn eval_content_rule_with_exclude_patterns_suppresses_match() {
+        let rules = vec![
+            make_rule(
+                "EnvRelay",
+                EnumerationScope::FileEnumeration,
+                MatchLocation::FileName,
+                MatchType::Exact,
+                vec![s(".env")],
+                MatchAction::Relay,
+                None,
+                Some(vec![s("Creds")]),
+            ),
+            make_content_rule_with_exclusions(
+                "Creds",
+                vec![s(r"(?i)password\s*[=:]\s*\S+")],
+                Some(vec![s(r"(?i)changeme"), s(r"\$\{"), s(r"\{\{")]),
+                None,
+            ),
+        ];
+        let engine = RuleEngine::compile(rules).unwrap();
+        let entry = mock_file_entry(".env");
+
+        // "changeme" is excluded
+        let content = b"password=changeme";
+        let findings = engine.evaluate_file(&entry, Some(content));
+        assert!(findings.is_empty(), "changeme should be excluded");
+
+        // env var ref is excluded
+        let content = b"password=${DB_PASS}";
+        let findings = engine.evaluate_file(&entry, Some(content));
+        assert!(findings.is_empty(), "${{}} should be excluded");
+
+        // template syntax is excluded
+        let content = b"password={{ vault_password }}";
+        let findings = engine.evaluate_file(&entry, Some(content));
+        assert!(findings.is_empty(), "{{{{}}}} should be excluded");
+    }
+
+    #[test]
+    fn eval_content_rule_exclude_patterns_no_match_keeps_finding() {
+        let rules = vec![
+            make_rule(
+                "EnvRelay",
+                EnumerationScope::FileEnumeration,
+                MatchLocation::FileName,
+                MatchType::Exact,
+                vec![s(".env")],
+                MatchAction::Relay,
+                None,
+                Some(vec![s("Creds")]),
+            ),
+            make_content_rule_with_exclusions(
+                "Creds",
+                vec![s(r"(?i)password\s*[=:]\s*\S+")],
+                Some(vec![s(r"(?i)changeme"), s(r"\$\{")]),
+                None,
+            ),
+        ];
+        let engine = RuleEngine::compile(rules).unwrap();
+        let entry = mock_file_entry(".env");
+
+        let content = b"password=xK8mPzQ2wR5v";
+        let findings = engine.evaluate_file(&entry, Some(content));
+        assert_eq!(findings.len(), 1, "real secret should not be excluded");
+        assert_eq!(findings[0].triage, Triage::Red);
+    }
+
+    #[test]
+    fn eval_content_rule_skip_comments_suppresses_commented_line() {
+        let rules = vec![
+            make_rule(
+                "EnvRelay",
+                EnumerationScope::FileEnumeration,
+                MatchLocation::FileName,
+                MatchType::Exact,
+                vec![s(".env")],
+                MatchAction::Relay,
+                None,
+                Some(vec![s("Creds")]),
+            ),
+            make_content_rule_with_exclusions(
+                "Creds",
+                vec![s(r"(?i)password\s*[=:]\s*\S+")],
+                None,
+                Some(true),
+            ),
+        ];
+        let engine = RuleEngine::compile(rules).unwrap();
+        let entry = mock_file_entry(".env");
+
+        // Hash comment
+        let content = b"# password=secret123";
+        let findings = engine.evaluate_file(&entry, Some(content));
+        assert!(findings.is_empty(), "# comment should be skipped");
+
+        // Double-slash comment
+        let content = b"// password = secret123";
+        let findings = engine.evaluate_file(&entry, Some(content));
+        assert!(findings.is_empty(), "// comment should be skipped");
+
+        // Semicolon comment (INI style)
+        let content = b"; password = secret123";
+        let findings = engine.evaluate_file(&entry, Some(content));
+        assert!(findings.is_empty(), "; comment should be skipped");
+
+        // SQL comment
+        let content = b"-- password = secret123";
+        let findings = engine.evaluate_file(&entry, Some(content));
+        assert!(findings.is_empty(), "-- comment should be skipped");
+    }
+
+    #[test]
+    fn eval_content_rule_skip_comments_keeps_uncommented_line() {
+        let rules = vec![
+            make_rule(
+                "EnvRelay",
+                EnumerationScope::FileEnumeration,
+                MatchLocation::FileName,
+                MatchType::Exact,
+                vec![s(".env")],
+                MatchAction::Relay,
+                None,
+                Some(vec![s("Creds")]),
+            ),
+            make_content_rule_with_exclusions(
+                "Creds",
+                vec![s(r"(?i)password\s*[=:]\s*\S+")],
+                None,
+                Some(true),
+            ),
+        ];
+        let engine = RuleEngine::compile(rules).unwrap();
+        let entry = mock_file_entry(".env");
+
+        let content = b"password=secret123";
+        let findings = engine.evaluate_file(&entry, Some(content));
+        assert_eq!(findings.len(), 1, "uncommented line should be kept");
+    }
+
+    #[test]
+    fn eval_content_rule_skip_comments_multiline() {
+        let rules = vec![
+            make_rule(
+                "EnvRelay",
+                EnumerationScope::FileEnumeration,
+                MatchLocation::FileName,
+                MatchType::Exact,
+                vec![s(".env")],
+                MatchAction::Relay,
+                None,
+                Some(vec![s("Creds")]),
+            ),
+            make_content_rule_with_exclusions(
+                "Creds",
+                vec![s(r"(?i)password\s*[=:]\s*\S+")],
+                None,
+                Some(true),
+            ),
+        ];
+        let engine = RuleEngine::compile(rules).unwrap();
+        let entry = mock_file_entry(".env");
+
+        // Comment on first line, real value on second
+        let content = b"# password=example\npassword=realSecret42";
+        let findings = engine.evaluate_file(&entry, Some(content));
+        assert_eq!(findings.len(), 1, "should find the uncommented line only");
+    }
+
+    #[test]
+    fn compile_rejects_exclude_patterns_on_filename_rule() {
+        let rule = ClassifierRule {
+            name: "Bad".to_string(),
+            scope: EnumerationScope::FileEnumeration,
+            match_location: MatchLocation::FileName,
+            match_type: MatchType::Exact,
+            patterns: vec![s("id_rsa")],
+            action: MatchAction::Snaffle,
+            triage: Some(Triage::Black),
+            relay_targets: None,
+            max_size: None,
+            context_bytes: None,
+            description: None,
+            exclude_patterns: Some(vec![s("test")]),
+            skip_comments: None,
+            exclude_file_paths: None,
+        };
+        let result = RuleEngine::compile(vec![rule]);
+        let err = result
+            .err()
+            .expect("should reject exclude_patterns on FileEnumeration rule");
+        assert!(
+            err.to_string().contains("exclude_patterns/skip_comments"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn compile_rejects_skip_comments_on_bytes_rule() {
+        let rule = ClassifierRule {
+            name: "Bad".to_string(),
+            scope: EnumerationScope::ContentsEnumeration,
+            match_location: MatchLocation::FileContentAsBytes,
+            match_type: MatchType::Regex,
+            patterns: vec![s(r"\x30\x82")],
+            action: MatchAction::Snaffle,
+            triage: Some(Triage::Red),
+            relay_targets: None,
+            max_size: None,
+            context_bytes: None,
+            description: None,
+            exclude_patterns: None,
+            skip_comments: Some(true),
+            exclude_file_paths: None,
+        };
+        let result = RuleEngine::compile(vec![rule]);
+        assert!(
+            result.is_err(),
+            "should reject skip_comments on FileContentAsBytes rule"
+        );
+    }
+
+    #[test]
+    fn extract_matched_line_single_line() {
+        let input = "password=secret123";
+        assert_eq!(super::extract_matched_line(input, 0), "password=secret123");
+    }
+
+    #[test]
+    fn extract_matched_line_middle_of_multiline() {
+        let input = "first line\npassword=secret\nthird line";
+        assert_eq!(super::extract_matched_line(input, 11), "password=secret");
+    }
+
+    #[test]
+    fn extract_matched_line_last_line() {
+        let input = "first\nsecond\npassword=val";
+        assert_eq!(super::extract_matched_line(input, 13), "password=val");
+    }
+
+    #[test]
+    fn is_comment_line_various_markers() {
+        assert!(super::is_comment_line("# comment"));
+        assert!(super::is_comment_line("  # indented comment"));
+        assert!(super::is_comment_line("// C-style comment"));
+        assert!(super::is_comment_line("-- SQL comment"));
+        assert!(super::is_comment_line("; INI comment"));
+        assert!(super::is_comment_line("/* block comment start"));
+        assert!(super::is_comment_line("* block continuation"));
+        assert!(super::is_comment_line("<!-- XML comment"));
+        assert!(super::is_comment_line("% LaTeX comment"));
+        assert!(super::is_comment_line("REM batch comment"));
+        assert!(super::is_comment_line("rem batch comment"));
+
+        assert!(!super::is_comment_line("password=secret"));
+        assert!(!super::is_comment_line("  password=secret"));
+        assert!(!super::is_comment_line(""));
+    }
+
+    #[test]
+    fn content_fallback_evaluates_content_rules_when_no_file_rule_matches() {
+        let rules = vec![
+            // A file rule that won't match our test entry.
+            make_rule(
+                "EnvFiles",
+                EnumerationScope::FileEnumeration,
+                MatchLocation::FileName,
+                MatchType::Exact,
+                vec![s(".env")],
+                MatchAction::Relay,
+                None,
+                Some(vec![s("CredCheck")]),
+            ),
+            // A content rule that should be evaluated via fallback.
+            make_rule(
+                "CredCheck",
+                EnumerationScope::ContentsEnumeration,
+                MatchLocation::FileContentAsString,
+                MatchType::Regex,
+                vec![s(r"(?i)password\s*=")],
+                MatchAction::Snaffle,
+                Some(Triage::Red),
+                None,
+            ),
+        ];
+        let engine = RuleEngine::compile(rules).unwrap();
+        // "config" doesn't match any file rule, so content fallback fires.
+        let entry = mock_file_entry("config");
+        let content = b"password=secret123";
+        let findings = engine.evaluate_file(&entry, Some(content));
+        assert_eq!(
+            findings.len(),
+            1,
+            "content fallback should find the credential"
+        );
+        assert_eq!(findings[0].rule_name, "CredCheck");
+        assert_eq!(findings[0].triage, Triage::Red);
+    }
+
+    #[test]
+    fn content_fallback_does_not_fire_when_relay_matched() {
+        let rules = vec![
+            make_rule(
+                "EnvFiles",
+                EnumerationScope::FileEnumeration,
+                MatchLocation::FileName,
+                MatchType::Exact,
+                vec![s(".env")],
+                MatchAction::Relay,
+                None,
+                Some(vec![s("CredCheck")]),
+            ),
+            make_rule(
+                "CredCheck",
+                EnumerationScope::ContentsEnumeration,
+                MatchLocation::FileContentAsString,
+                MatchType::Regex,
+                vec![s(r"(?i)password\s*=")],
+                MatchAction::Snaffle,
+                Some(Triage::Red),
+                None,
+            ),
+        ];
+        let engine = RuleEngine::compile(rules).unwrap();
+        // ".env" matches the file rule which relays -- fallback should NOT fire.
+        let entry = mock_file_entry(".env");
+        let content = b"password=secret123";
+        let findings = engine.evaluate_file(&entry, Some(content));
+        // Should get exactly 1 finding from the relay, not 2 (which would happen
+        // if fallback also fired).
+        assert_eq!(
+            findings.len(),
+            1,
+            "relay path should produce 1 finding, fallback should not duplicate"
+        );
+    }
+
+    #[test]
+    fn content_fallback_does_not_fire_when_snaffle_matched() {
+        let rules = vec![
+            make_rule(
+                "SshKeys",
+                EnumerationScope::FileEnumeration,
+                MatchLocation::FileName,
+                MatchType::Exact,
+                vec![s("id_rsa")],
+                MatchAction::Snaffle,
+                Some(Triage::Black),
+                None,
+            ),
+            make_rule(
+                "CredCheck",
+                EnumerationScope::ContentsEnumeration,
+                MatchLocation::FileContentAsString,
+                MatchType::Regex,
+                vec![s(r"(?i)password\s*=")],
+                MatchAction::Snaffle,
+                Some(Triage::Red),
+                None,
+            ),
+        ];
+        let engine = RuleEngine::compile(rules).unwrap();
+        let entry = mock_file_entry("id_rsa");
+        let content = b"password=secret123";
+        let findings = engine.evaluate_file(&entry, Some(content));
+        // Should get 1 finding from SshKeys snaffle, NOT also CredCheck from fallback.
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_name, "SshKeys");
+    }
+
+    #[test]
+    fn content_fallback_does_not_fire_without_content() {
+        let rules = vec![make_rule(
+            "CredCheck",
+            EnumerationScope::ContentsEnumeration,
+            MatchLocation::FileContentAsString,
+            MatchType::Regex,
+            vec![s(r"(?i)password\s*=")],
+            MatchAction::Snaffle,
+            Some(Triage::Red),
+            None,
+        )];
+        let engine = RuleEngine::compile(rules).unwrap();
+        let entry = mock_file_entry("config");
+        let findings = engine.evaluate_file(&entry, None);
+        assert!(
+            findings.is_empty(),
+            "fallback should not fire without content"
+        );
+    }
+
+    #[test]
+    fn compile_rejects_exclude_file_paths_on_non_content_rule() {
+        let mut rule = make_rule(
+            "BadRule",
+            EnumerationScope::FileEnumeration,
+            MatchLocation::FileName,
+            MatchType::Exact,
+            vec![s("id_rsa")],
+            MatchAction::Snaffle,
+            Some(Triage::Black),
+            None,
+        );
+        rule.exclude_file_paths = Some(vec![s("(?i)/perl/man/")]);
+
+        let result = RuleEngine::compile(vec![rule]);
+        let Err(err) = result else {
+            panic!("expected compile to fail, but it succeeded")
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("BadRule"),
+            "error should name the offending rule, got: {msg}"
+        );
+        assert!(
+            msg.contains("exclude_file_paths"),
+            "error should mention the offending field, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn compile_accepts_exclude_file_paths_on_content_rule() {
+        let mut rule = make_rule(
+            "GoodRule",
+            EnumerationScope::ContentsEnumeration,
+            MatchLocation::FileContentAsString,
+            MatchType::Regex,
+            vec![s("(?i)password\\s*=")],
+            MatchAction::Snaffle,
+            Some(Triage::Red),
+            None,
+        );
+        rule.exclude_file_paths = Some(vec![s("(?i)/perl/man/"), s("(?i)\\.trc$")]);
+
+        let engine = RuleEngine::compile(vec![rule]).expect("valid rule should compile");
+        assert_eq!(engine.rule_count(), 1);
+    }
+
+    #[test]
+    fn compile_rejects_invalid_exclude_file_paths_regex() {
+        let mut rule = make_rule(
+            "BadRegex",
+            EnumerationScope::ContentsEnumeration,
+            MatchLocation::FileContentAsString,
+            MatchType::Regex,
+            vec![s("(?i)password\\s*=")],
+            MatchAction::Snaffle,
+            Some(Triage::Red),
+            None,
+        );
+        // Unclosed character class — should fail to compile.
+        rule.exclude_file_paths = Some(vec![s("[unclosed")]);
+
+        let result = RuleEngine::compile(vec![rule]);
+        let Err(err) = result else {
+            panic!("expected compile to fail, but it succeeded")
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("BadRegex"),
+            "error should name the offending rule, got: {msg}"
+        );
+    }
+
+    fn content_entry(path: &str) -> FileEntry {
+        FileEntry {
+            name: path.rsplit('/').next().unwrap_or(path).to_string(),
+            path: path.to_string(),
+            extension: path.rsplit('.').next().unwrap_or("").to_string(),
+            size: 1024,
+            uid: 0,
+            gid: 0,
+            mode: 0o644,
+        }
+    }
+
+    fn make_content_rule_with_path_excludes(
+        name: &str,
+        patterns: Vec<String>,
+        path_excludes: Vec<String>,
+    ) -> ClassifierRule {
+        ClassifierRule {
+            name: name.to_string(),
+            scope: EnumerationScope::ContentsEnumeration,
+            match_location: MatchLocation::FileContentAsString,
+            match_type: MatchType::Regex,
+            patterns,
+            action: MatchAction::Snaffle,
+            triage: Some(Triage::Red),
+            relay_targets: None,
+            max_size: None,
+            context_bytes: None,
+            description: None,
+            exclude_patterns: None,
+            skip_comments: None,
+            exclude_file_paths: Some(path_excludes),
+        }
+    }
+
+    #[test]
+    fn exclude_file_paths_suppresses_match_on_matching_path() {
+        let rule = make_content_rule_with_path_excludes(
+            "TestRule",
+            vec![s("(?i)password\\s*=\\s*['\"][^'\"]+['\"]")],
+            vec![s("(?i)/perl/man/man[1-9]/")],
+        );
+        let engine = RuleEngine::compile(vec![rule]).unwrap();
+
+        let entry = content_entry("/oracle/perl/man/man3/DBI.3");
+        let content = b"password = 'superlongohverylong2'";
+        let findings = engine.evaluate_content_only(&entry, content);
+        assert!(
+            findings.is_empty(),
+            "finding should be suppressed by exclude_file_paths, got: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn exclude_file_paths_allows_match_on_non_matching_path() {
+        let rule = make_content_rule_with_path_excludes(
+            "TestRule",
+            vec![s("(?i)password\\s*=\\s*['\"][^'\"]+['\"]")],
+            vec![s("(?i)/perl/man/man[1-9]/")],
+        );
+        let engine = RuleEngine::compile(vec![rule]).unwrap();
+
+        let entry = content_entry("/etc/myapp/config.toml");
+        let content = b"password = 'superlongohverylong2'";
+        let findings = engine.evaluate_content_only(&entry, content);
+        assert_eq!(findings.len(), 1, "finding should fire: {findings:?}");
+        assert_eq!(findings[0].rule_name, "TestRule");
+    }
+
+    #[test]
+    fn exclude_file_paths_multiple_patterns_or_semantics() {
+        let rule = make_content_rule_with_path_excludes(
+            "TestRule",
+            vec![s("(?i)password\\s*=\\s*['\"][^'\"]+['\"]")],
+            vec![
+                s("(?i)/perl/man/"),
+                s("(?i)\\.trc$"),
+                s("(?i)/oracle\\.ahf/"),
+            ],
+        );
+        let engine = RuleEngine::compile(vec![rule]).unwrap();
+
+        for path in [
+            "/opt/perl/man/man3/DBI.3",
+            "/u01/app/oracle/diag/trace/dump.trc",
+            "/opt/oracle.ahf/scripts/install.sh",
+        ] {
+            let entry = content_entry(path);
+            let content = b"password = 'superlongohverylong2'";
+            let findings = engine.evaluate_content_only(&entry, content);
+            assert!(
+                findings.is_empty(),
+                "path {path} should match an exclude, got: {findings:?}"
+            );
+        }
+
+        // Control: path matches none of the excludes.
+        let entry = content_entry("/etc/myapp/config.toml");
+        let content = b"password = 'superlongohverylong2'";
+        let findings = engine.evaluate_content_only(&entry, content);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn exclude_file_paths_coexists_with_exclude_patterns() {
+        // Both layers present — either can suppress.
+        let rule = ClassifierRule {
+            name: "TestRule".to_string(),
+            scope: EnumerationScope::ContentsEnumeration,
+            match_location: MatchLocation::FileContentAsString,
+            match_type: MatchType::Regex,
+            patterns: vec![s("(?i)password\\s*=\\s*['\"][^'\"]+['\"]")],
+            action: MatchAction::Snaffle,
+            triage: Some(Triage::Red),
+            relay_targets: None,
+            max_size: None,
+            context_bytes: None,
+            description: None,
+            exclude_patterns: Some(vec![s("changeme")]),
+            skip_comments: None,
+            exclude_file_paths: Some(vec![s("(?i)/perl/man/")]),
+        };
+        let engine = RuleEngine::compile(vec![rule]).unwrap();
+
+        // exclude_patterns hit — line contains "changeme".
+        let entry = content_entry("/etc/myapp/config.toml");
+        let content = b"password = 'changeme123'";
+        let findings = engine.evaluate_content_only(&entry, content);
+        assert!(findings.is_empty(), "exclude_patterns should suppress");
+
+        // exclude_file_paths hit — path under /perl/man/.
+        let entry = content_entry("/opt/perl/man/man3/DBI.3");
+        let content = b"password = 'superlongohverylong2'";
+        let findings = engine.evaluate_content_only(&entry, content);
+        assert!(findings.is_empty(), "exclude_file_paths should suppress");
+
+        // Neither hit — finding fires.
+        let entry = content_entry("/etc/myapp/config.toml");
+        let content = b"password = 'superlongohverylong2'";
+        let findings = engine.evaluate_content_only(&entry, content);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn exclude_file_paths_short_circuits_before_main_matcher() {
+        // Regression: path-exclude check must run before the main matcher scan
+        // for content-string rules, so excluded paths pay no full-content cost.
+        // Structural test — locks the behavior so the reorder doesn't regress.
+        let rule = make_content_rule_with_path_excludes(
+            "TestRule",
+            vec![s("(?i)password\\s*=\\s*['\"][^'\"]+['\"]")],
+            vec![s("(?i)/excluded/path/")],
+        );
+        let engine = RuleEngine::compile(vec![rule]).unwrap();
+
+        let entry = content_entry("/excluded/path/config.toml");
+        let content = b"password = 'definitely_a_real_looking_secret'";
+        let findings = engine.evaluate_content_only(&entry, content);
+        assert!(
+            findings.is_empty(),
+            "path exclude must suppress even when main pattern would match, got: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn evaluate_content_only_bypasses_file_discards() {
+        // A content rule that fires on quoted `password =` assignments.
+        let content_rule = ClassifierRule {
+            name: "TestCred".to_string(),
+            scope: EnumerationScope::ContentsEnumeration,
+            match_location: MatchLocation::FileContentAsString,
+            match_type: MatchType::Regex,
+            patterns: vec![s("(?i)password\\s*=\\s*['\"][^'\"]+['\"]")],
+            action: MatchAction::Snaffle,
+            triage: Some(Triage::Red),
+            relay_targets: None,
+            max_size: None,
+            context_bytes: None,
+            description: None,
+            exclude_patterns: None,
+            skip_comments: None,
+            exclude_file_paths: None,
+        };
+
+        // A file rule that would discard .trc extensions.
+        let discard_rule = make_rule(
+            "DiscardTrc",
+            EnumerationScope::FileEnumeration,
+            MatchLocation::FileExtension,
+            MatchType::Exact,
+            vec![s("trc")],
+            MatchAction::Discard,
+            None,
+            None,
+        );
+
+        let engine = RuleEngine::compile(vec![content_rule, discard_rule]).unwrap();
+
+        let entry = FileEntry {
+            name: "dump.trc".to_string(),
+            path: "/tmp/dump.trc".to_string(),
+            extension: "trc".to_string(),
+            size: 1024,
+            uid: 0,
+            gid: 0,
+            mode: 0o644,
+        };
+        let content = b"password = 'superlongohverylong2'";
+
+        // evaluate_file respects the discard — no findings.
+        let discarded = engine.evaluate_file(&entry, Some(content));
+        assert!(
+            discarded.is_empty(),
+            "evaluate_file should discard .trc: {discarded:?}"
+        );
+
+        // evaluate_content_only bypasses the discard — finding fires.
+        let direct = engine.evaluate_content_only(&entry, content);
+        assert_eq!(
+            direct.len(),
+            1,
+            "evaluate_content_only should find the credential: {direct:?}"
+        );
+        assert_eq!(direct[0].rule_name, "TestCred");
     }
 }

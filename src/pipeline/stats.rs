@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytesize::ByteSize;
 
+use crate::classifier::Triage;
+
 /// Thread-safe pipeline statistics with atomic counters.
 /// Shared across pipeline phases via `Arc<PipelineStats>`.
 #[derive(Debug)]
@@ -18,10 +20,13 @@ pub struct PipelineStats {
     pub files_skipped_size: AtomicU64,
     pub files_skipped_binary: AtomicU64,
     pub findings: AtomicU64,
+    pub findings_written: AtomicU64,
+    pub findings_dropped: AtomicU64,
     pub errors_transient: AtomicU64,
     pub errors_stale: AtomicU64,
     pub errors_connection: AtomicU64,
     pub bytes_read: AtomicU64,
+    pub scanner_retries: AtomicU64,
 }
 
 impl Default for PipelineStats {
@@ -38,10 +43,13 @@ impl Default for PipelineStats {
             files_skipped_size: AtomicU64::new(0),
             files_skipped_binary: AtomicU64::new(0),
             findings: AtomicU64::new(0),
+            findings_written: AtomicU64::new(0),
+            findings_dropped: AtomicU64::new(0),
             errors_transient: AtomicU64::new(0),
             errors_stale: AtomicU64::new(0),
             errors_connection: AtomicU64::new(0),
             bytes_read: AtomicU64::new(0),
+            scanner_retries: AtomicU64::new(0),
         }
     }
 }
@@ -92,6 +100,14 @@ impl PipelineStats {
         self.findings.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn add_findings_written(&self, n: u64) {
+        self.findings_written.fetch_add(n, Ordering::Relaxed);
+    }
+
+    pub fn inc_findings_dropped(&self) {
+        self.findings_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn inc_errors_transient(&self) {
         self.errors_transient.fetch_add(1, Ordering::Relaxed);
     }
@@ -108,7 +124,12 @@ impl PipelineStats {
         self.bytes_read.fetch_add(n, Ordering::Relaxed);
     }
 
+    pub fn inc_scanner_retries(&self) {
+        self.scanner_retries.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Create a point-in-time copy by reading all atomic counters.
+    #[must_use]
     pub fn snapshot(&self) -> Self {
         Self {
             hosts_scanned: AtomicU64::new(self.hosts_scanned.load(Ordering::Relaxed)),
@@ -126,31 +147,50 @@ impl PipelineStats {
             files_skipped_size: AtomicU64::new(self.files_skipped_size.load(Ordering::Relaxed)),
             files_skipped_binary: AtomicU64::new(self.files_skipped_binary.load(Ordering::Relaxed)),
             findings: AtomicU64::new(self.findings.load(Ordering::Relaxed)),
+            findings_written: AtomicU64::new(self.findings_written.load(Ordering::Relaxed)),
+            findings_dropped: AtomicU64::new(self.findings_dropped.load(Ordering::Relaxed)),
             errors_transient: AtomicU64::new(self.errors_transient.load(Ordering::Relaxed)),
             errors_stale: AtomicU64::new(self.errors_stale.load(Ordering::Relaxed)),
             errors_connection: AtomicU64::new(self.errors_connection.load(Ordering::Relaxed)),
             bytes_read: AtomicU64::new(self.bytes_read.load(Ordering::Relaxed)),
+            scanner_retries: AtomicU64::new(self.scanner_retries.load(Ordering::Relaxed)),
         }
     }
 }
 
-impl fmt::Display for PipelineStats {
+/// Formats pipeline stats with severity-aware labels.
+///
+/// Progress bars show "Matches (all)" for total rule hits and
+/// "Findings (>= {severity})" for the count that passed the
+/// severity filter. This wrapper carries the `min_severity` from
+/// config so `Display` can render the correct threshold.
+pub struct StatsFormatter<'a> {
+    pub stats: &'a PipelineStats,
+    pub min_severity: Triage,
+}
+
+impl fmt::Display for StatsFormatter<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let hosts = self.hosts_scanned.load(Ordering::Relaxed);
-        let exports = self.exports_found.load(Ordering::Relaxed);
-        let exports_fail = self.exports_failed.load(Ordering::Relaxed);
-        let exports_deny = self.exports_denied.load(Ordering::Relaxed);
-        let dirs = self.dirs_walked.load(Ordering::Relaxed);
-        let files_discovered = self.files_discovered.load(Ordering::Relaxed);
-        let files_scanned = self.files_content_scanned.load(Ordering::Relaxed);
-        let skip_perm = self.files_skipped_permission.load(Ordering::Relaxed);
-        let skip_size = self.files_skipped_size.load(Ordering::Relaxed);
-        let skip_binary = self.files_skipped_binary.load(Ordering::Relaxed);
-        let findings = self.findings.load(Ordering::Relaxed);
-        let err_transient = self.errors_transient.load(Ordering::Relaxed);
-        let err_stale = self.errors_stale.load(Ordering::Relaxed);
-        let err_conn = self.errors_connection.load(Ordering::Relaxed);
-        let bytes = self.bytes_read.load(Ordering::Relaxed);
+        let s = self.stats;
+        let sev = self.min_severity;
+
+        let hosts = s.hosts_scanned.load(Ordering::Relaxed);
+        let exports = s.exports_found.load(Ordering::Relaxed);
+        let exports_fail = s.exports_failed.load(Ordering::Relaxed);
+        let exports_deny = s.exports_denied.load(Ordering::Relaxed);
+        let dirs = s.dirs_walked.load(Ordering::Relaxed);
+        let files_discovered = s.files_discovered.load(Ordering::Relaxed);
+        let files_scanned = s.files_content_scanned.load(Ordering::Relaxed);
+        let skip_perm = s.files_skipped_permission.load(Ordering::Relaxed);
+        let skip_size = s.files_skipped_size.load(Ordering::Relaxed);
+        let skip_binary = s.files_skipped_binary.load(Ordering::Relaxed);
+        let findings = s.findings.load(Ordering::Relaxed);
+        let findings_written = s.findings_written.load(Ordering::Relaxed);
+        let err_transient = s.errors_transient.load(Ordering::Relaxed);
+        let err_stale = s.errors_stale.load(Ordering::Relaxed);
+        let err_conn = s.errors_connection.load(Ordering::Relaxed);
+        let scan_retries = s.scanner_retries.load(Ordering::Relaxed);
+        let bytes = s.bytes_read.load(Ordering::Relaxed);
 
         writeln!(f, "Scan Summary:")?;
         writeln!(f, "  Hosts scanned:              {hosts:>6}")?;
@@ -163,10 +203,12 @@ impl fmt::Display for PipelineStats {
         writeln!(f, "  Files skipped (permission): {skip_perm:>6}")?;
         writeln!(f, "  Files skipped (size):       {skip_size:>6}")?;
         writeln!(f, "  Files skipped (binary):     {skip_binary:>6}")?;
-        writeln!(f, "  Findings:                   {findings:>6}")?;
+        writeln!(f, "  Matches (all):              {findings:>6}")?;
+        writeln!(f, "  Findings (>= {sev}):{findings_written:>6}")?;
         writeln!(f, "  Errors (transient):         {err_transient:>6}")?;
         writeln!(f, "  Errors (stale handle):      {err_stale:>6}")?;
         writeln!(f, "  Errors (connection):        {err_conn:>6}")?;
+        writeln!(f, "  Scanner retries:            {scan_retries:>6}")?;
         write!(f, "  Bytes read:            {}", ByteSize::b(bytes))
     }
 }
@@ -243,5 +285,35 @@ mod tests {
         assert_eq!(snap.exports_found.load(Ordering::Relaxed), 0);
         assert_eq!(snap.exports_failed.load(Ordering::Relaxed), 1);
         assert_eq!(snap.exports_denied.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn stats_formatter_uses_severity_label() {
+        use crate::classifier::Triage;
+
+        let stats = PipelineStats::default();
+        stats.inc_findings();
+        stats.inc_findings();
+        stats.add_findings_written(1);
+
+        let fmt = StatsFormatter {
+            stats: &stats,
+            min_severity: Triage::Red,
+        };
+        let output = format!("{fmt}");
+
+        assert!(
+            output.contains("Matches (all):"),
+            "should say 'Matches (all)': {output}"
+        );
+        assert!(
+            output.contains("Findings (>= Red):"),
+            "should say 'Findings (>= Red)': {output}"
+        );
+        // Must NOT contain old labels
+        assert!(
+            !output.contains("Findings written"),
+            "old label should be gone: {output}"
+        );
     }
 }

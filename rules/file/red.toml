@@ -19,14 +19,24 @@ relay_targets = ["CredentialPatterns", "CloudKeyPatterns"]
 description = "Files with 'env' as a word component -- may contain environment credentials"
 
 [[rules]]
-name = "ConfigFileExtensions"
+name = "ConfigSmallExtensions"
 scope = "FileEnumeration"
 match_location = "FileExtension"
 match_type = "Exact"
-patterns = ["yaml", "yml", "json", "toml", "ini", "cfg", "conf", "cnf", "config", "xml", "hcl"]
+patterns = ["ini", "cfg", "conf", "cnf", "config", "hcl"]
 action = "Relay"
-relay_targets = ["CredentialPatterns", "CloudKeyPatterns", "ConnectionStrings", "TokenPatterns"]
-description = "Configuration files -- may contain embedded credentials or connection strings"
+relay_targets = ["CredentialPatterns", "ConnectionStrings"]
+description = "Configuration file extensions likely to contain credentials"
+
+[[rules]]
+name = "ConfigDataExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["yaml", "yml", "json", "toml", "xml"]
+action = "Relay"
+relay_targets = ["CredentialPatterns", "ConnectionStrings"]
+description = "Structured data formats that may contain credentials"
 
 [[rules]]
 name = "ShellScriptExtensions"
@@ -114,14 +124,24 @@ triage = "Red"
 description = "Shell and application command history -- may contain typed credentials"
 
 [[rules]]
-name = "HiddenDotfiles"
+name = "CloudStorageCredFiles"
 scope = "FileEnumeration"
 match_location = "FileName"
-match_type = "Regex"
-patterns = ['^\.']
+match_type = "Exact"
+patterns = [".boto", ".s3cfg"]
 action = "Relay"
-relay_targets = ["CredentialPatterns", "CloudKeyPatterns", "ConnectionStrings", "TokenPatterns"]
-description = "Hidden dotfiles -- relay to content scan for credential detection"
+relay_targets = ["CredentialPatterns", "CloudKeyPatterns"]
+description = "Cloud storage credential files"
+
+[[rules]]
+name = "RcloneConfig"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [".rclone.conf"]
+action = "Relay"
+relay_targets = ["CredentialPatterns"]
+description = "Rclone configuration with embedded credentials"
 
 [[rules]]
 name = "AppCredentialPaths"
@@ -198,14 +218,24 @@ relay_targets = ["CredentialPatterns"]
 description = "Windows deployment configuration files with embedded credentials"
 
 [[rules]]
-name = "CertificateExtensions"
+name = "PrivateKeyExtensions"
 scope = "FileEnumeration"
 match_location = "FileExtension"
 match_type = "Exact"
-patterns = ["pem", "pfx", "p12", "crt", "cer", "key"]
+patterns = ["key", "pem", "pfx", "p12"]
 action = "Relay"
-relay_targets = ["CryptoPatterns"]
-description = "Certificate and key files -- relay to crypto content detection"
+relay_targets = ["CryptoPrivateKeys"]
+description = "Private key file extensions -- may contain key material"
+
+[[rules]]
+name = "CertificateOnlyExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["crt", "cer"]
+action = "Snaffle"
+triage = "Yellow"
+description = "Certificate files -- public, informational only"
 
 [[rules]]
 name = "RemoteAccessConfigs"
@@ -278,16 +308,6 @@ relay_targets = ["CredentialPatterns", "TokenPatterns"]
 description = "Rust source files"
 
 [[rules]]
-name = "LanguageRelayCFamily"
-scope = "FileEnumeration"
-match_location = "FileExtension"
-match_type = "Exact"
-patterns = ["c", "cpp", "h", "hpp", "cs"]
-action = "Relay"
-relay_targets = ["CredentialPatterns", "ConnectionStrings"]
-description = "C, C++, and C# source files"
-
-[[rules]]
 name = "LanguageRelayJs"
 scope = "FileEnumeration"
 match_location = "FileExtension"
@@ -317,7 +337,7 @@ match_location = "FileExtension"
 match_type = "Exact"
 patterns = ["ovpn", "tblk"]
 action = "Relay"
-relay_targets = ["CredentialPatterns"]
+relay_targets = ["CredentialPatterns", "WireguardPrivateKey"]
 description = "VPN configuration files -- may contain embedded credentials"
 
 [[rules]]

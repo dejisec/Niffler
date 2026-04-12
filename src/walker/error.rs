@@ -8,14 +8,14 @@ pub enum WalkerError {
     #[error("NFS error: {0}")]
     Nfs(#[from] NfsError),
 
-    #[error("max depth reached at {0}")]
-    MaxDepthReached(String),
-
     #[error("walker channel closed")]
     ChannelClosed,
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("NFS operation timed out: {0}")]
+    Timeout(String),
 }
 
 impl From<SendError<FileMsg>> for WalkerError {
@@ -34,12 +34,13 @@ impl From<Box<dyn std::error::Error + Send + Sync>> for WalkerError {
 }
 
 impl WalkerError {
+    #[must_use]
     pub fn classify(&self) -> ErrorClass {
         match self {
             Self::Nfs(e) => classify_error(e),
-            Self::MaxDepthReached(_) => ErrorClass::Fatal,
             Self::ChannelClosed => ErrorClass::Fatal,
             Self::Io(_) => ErrorClass::Transient,
+            Self::Timeout(_) => ErrorClass::Transient,
         }
     }
 }
@@ -74,13 +75,6 @@ mod tests {
     }
 
     #[test]
-    fn walker_error_max_depth_display() {
-        let err = WalkerError::MaxDepthReached("/a/b/c/d".into());
-        let msg = err.to_string().to_lowercase();
-        assert!(msg.contains("depth"));
-    }
-
-    #[test]
     fn walker_error_io_from_std() {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "test");
         let err = WalkerError::from(io_err);
@@ -102,9 +96,5 @@ mod tests {
     #[test]
     fn walker_error_classify_non_nfs_is_fatal() {
         assert_eq!(WalkerError::ChannelClosed.classify(), ErrorClass::Fatal);
-        assert_eq!(
-            WalkerError::MaxDepthReached("/deep".into()).classify(),
-            ErrorClass::Fatal
-        );
     }
 }

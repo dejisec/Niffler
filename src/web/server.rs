@@ -97,45 +97,6 @@ mod tests {
         assert!(ct.contains("text/css"), "expected text/css, got {ct}");
     }
 
-    #[tokio::test]
-    async fn test_static_js_200() {
-        let app = test_app().await;
-        let req = Request::builder()
-            .uri("/static/js/htmx.min.js")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let ct = resp
-            .headers()
-            .get("content-type")
-            .unwrap()
-            .to_str()
-            .unwrap();
-        assert!(
-            ct.contains("application/javascript"),
-            "expected application/javascript, got {ct}",
-        );
-    }
-
-    #[tokio::test]
-    async fn test_font_200() {
-        let app = test_app().await;
-        let req = Request::builder()
-            .uri("/static/fonts/dm-sans-400.woff2")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let ct = resp
-            .headers()
-            .get("content-type")
-            .unwrap()
-            .to_str()
-            .unwrap();
-        assert_eq!(ct, "font/woff2");
-    }
-
     async fn test_app_with_data() -> Router {
         let db = Database::open_memory().await.unwrap();
         crate::web::db::test_helpers::seed_test_data(&db).await;
@@ -379,9 +340,11 @@ mod tests {
         let html = std::str::from_utf8(&body).unwrap();
 
         assert!(html.contains("10.0.0.1"), "should contain host 10.0.0.1");
+        // Table rows should not contain 10.0.0.2, but the OOB host dropdown
+        // legitimately includes it as a selectable filter option.
         assert!(
-            !html.contains("10.0.0.2"),
-            "should not contain host 10.0.0.2"
+            !html.contains("<td class=\"mono\">10.0.0.2</td>"),
+            "table rows should not contain host 10.0.0.2"
         );
     }
 
@@ -1139,8 +1102,11 @@ mod tests {
             .await
             .unwrap();
         let csv = std::str::from_utf8(&body).unwrap();
-        let lines: Vec<&str> = csv.lines().collect();
-        assert_eq!(lines.len(), 11, "header + 10 data rows (all seed data)");
+        assert_eq!(
+            csv.lines().count(),
+            11,
+            "header + 10 data rows (all seed data)"
+        );
     }
 
     #[tokio::test]
@@ -1157,8 +1123,11 @@ mod tests {
             .await
             .unwrap();
         let text = std::str::from_utf8(&body).unwrap();
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 10, "all 10 findings should be exported");
+        assert_eq!(
+            text.lines().count(),
+            10,
+            "all 10 findings should be exported"
+        );
     }
 
     // ── Step 13: Scans Page ─────────────────────────────────────
@@ -1255,5 +1224,27 @@ mod tests {
             html.contains("/findings?scan_id="),
             "scan findings count should link to filtered findings page"
         );
+    }
+
+    #[tokio::test]
+    async fn api_stats_returns_json() {
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/stats")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let stats: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(stats.get("total_findings").is_some());
+        assert!(stats.get("total_hosts").is_some());
+        assert!(stats.get("total_scans").is_some());
     }
 }

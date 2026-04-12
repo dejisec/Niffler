@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -5,54 +6,154 @@ use tokio_util::sync::CancellationToken;
 
 use crate::classifier::RuleEngine;
 use crate::nfs::{AuthCreds, ErrorClass, NfsConnector, NfsFh, NfsOps};
-use crate::pipeline::{ExportMsg, FileMsg, FileReader, PipelineStats};
+use crate::pipeline::{ExportMsg, FileMsg, FileReader, PipelineStats, RetryPolicy};
 
 use super::error::WalkerError;
+use super::parallel::walk_subtrees_parallel;
 
 /// Returns true if the error warrants a retry with a fresh connection.
-fn is_retryable(err: &WalkerError) -> bool {
+pub(super) fn is_retryable(err: &WalkerError) -> bool {
     matches!(
         err.classify(),
         ErrorClass::ConnectionLost | ErrorClass::Transient
     )
 }
 
-/// Sleep with linear backoff, returning early on cancellation.
-async fn backoff_or_cancel(attempt: usize, delay_ms: u64, token: &CancellationToken) {
-    let delay = Duration::from_millis(delay_ms * (attempt as u64 + 1));
-    tokio::select! {
-        _ = tokio::time::sleep(delay) => {}
-        _ = token.cancelled() => {}
-    }
-}
-
+/// Shared connect-retry loop. Handles connection with timeout, retries on
+/// transient errors, and calls `walk_fn` with the connected client.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn walk_export(
+async fn try_connect_and_walk<F, Fut>(
     export: &ExportMsg,
-    file_tx: &mpsc::Sender<FileMsg>,
     connector: &dyn NfsConnector,
-    rules: &RuleEngine,
     creds: &AuthCreds,
-    max_depth: usize,
     max_retries: usize,
     retry_delay_ms: u64,
     token: &CancellationToken,
-    stats: &PipelineStats,
+    connect_timeout: Duration,
+    label: &str,
+    walk_fn: F,
+) -> Result<(), WalkerError>
+where
+    F: Fn(Box<dyn NfsOps>) -> Fut,
+    Fut: std::future::Future<Output = Result<(), WalkerError>>,
+{
+    let policy = RetryPolicy::new(
+        Duration::from_millis(retry_delay_ms),
+        Duration::from_secs(30),
+        max_retries,
+    );
+    let prefix = if label.is_empty() {
+        String::new()
+    } else {
+        format!("{label}: ")
+    };
+    for attempt in 0..=max_retries {
+        let connect_result = tokio::time::timeout(
+            connect_timeout,
+            connector.connect(&export.host, &export.export_path, creds),
+        )
+        .await;
+        let client = match connect_result {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => {
+                let err = WalkerError::from(e);
+                if !is_retryable(&err) || attempt == max_retries {
+                    return Err(err);
+                }
+                tracing::debug!(
+                    host = %export.host,
+                    export = %export.export_path,
+                    attempt = attempt + 1,
+                    max = max_retries + 1,
+                    "{}connection failed, retrying: {}",
+                    prefix,
+                    err
+                );
+                if policy.backoff_or_cancel(attempt, token).await.is_err() {
+                    return Ok(());
+                }
+                continue;
+            }
+            Err(_elapsed) => {
+                let err = WalkerError::Timeout(format!(
+                    "connect timeout to {}:{}",
+                    export.host, export.export_path
+                ));
+                if attempt == max_retries {
+                    return Err(err);
+                }
+                tracing::debug!(
+                    host = %export.host,
+                    export = %export.export_path,
+                    attempt = attempt + 1,
+                    max = max_retries + 1,
+                    "{}connect timed out, retrying",
+                    prefix
+                );
+                if policy.backoff_or_cancel(attempt, token).await.is_err() {
+                    return Ok(());
+                }
+                continue;
+            }
+        };
+
+        match walk_fn(client).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if !is_retryable(&e) || attempt == max_retries {
+                    return Err(e);
+                }
+                tracing::debug!(
+                    host = %export.host,
+                    export = %export.export_path,
+                    attempt = attempt + 1,
+                    max = max_retries + 1,
+                    "{}walk failed, retrying: {}",
+                    prefix,
+                    e
+                );
+                if policy.backoff_or_cancel(attempt, token).await.is_err() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    Err(WalkerError::Nfs(crate::nfs::NfsError::Transient(
+        "retry loop exhausted".into(),
+    )))
+}
+
+/// Shared UID-cycling wrapper. Tries primary creds, then cycles
+/// through harvested UIDs on PermissionDenied.
+#[allow(clippy::too_many_arguments)]
+async fn walk_with_uid_cycling<F, Fut>(
+    export: &ExportMsg,
+    connector: &dyn NfsConnector,
+    creds: &AuthCreds,
+    max_retries: usize,
+    retry_delay_ms: u64,
+    token: &CancellationToken,
+    connect_timeout: Duration,
     uid_cycle: bool,
     max_uid_attempts: usize,
-) -> Result<(), WalkerError> {
-    // Try primary credentials with full retry logic.
-    match try_walk_with_creds(
+    label: &str,
+    walk_fn: F,
+) -> Result<(), WalkerError>
+where
+    F: Fn(Box<dyn NfsOps>) -> Fut + Clone,
+    Fut: std::future::Future<Output = Result<(), WalkerError>>,
+{
+    match try_connect_and_walk(
         export,
-        file_tx,
         connector,
-        rules,
         creds,
-        max_depth,
         max_retries,
         retry_delay_ms,
         token,
-        stats,
+        connect_timeout,
+        label,
+        walk_fn.clone(),
     )
     .await
     {
@@ -69,7 +170,6 @@ pub(crate) async fn walk_export(
         Err(e) => return Err(e),
     }
 
-    // UID cycling: try harvested UIDs with a single connect attempt each.
     let mut attempts = 0usize;
     for alt_creds in &export.harvested_uids {
         if *alt_creds == *creds {
@@ -80,27 +180,29 @@ pub(crate) async fn walk_export(
         }
         attempts += 1;
 
-        match try_walk_with_creds(
+        match try_connect_and_walk(
             export,
-            file_tx,
             connector,
-            rules,
             alt_creds,
-            max_depth,
-            0, // no retries for alternate UIDs
+            0,
             retry_delay_ms,
             token,
-            stats,
+            connect_timeout,
+            label,
+            walk_fn.clone(),
         )
         .await
         {
             Ok(()) => {
+                let prefix = if label.is_empty() { "" } else { " " };
                 tracing::debug!(
                     host = %export.host,
                     export = %export.export_path,
                     uid = alt_creds.uid,
                     gid = alt_creds.gid,
-                    "walk succeeded with alternate UID"
+                    "{}{}walk succeeded with alternate UID",
+                    label,
+                    prefix
                 );
                 return Ok(());
             }
@@ -109,13 +211,11 @@ pub(crate) async fn walk_export(
         }
     }
 
-    // All UIDs exhausted.
     Err(WalkerError::Nfs(crate::nfs::NfsError::PermissionDenied))
 }
 
-/// Connect with the given credentials and walk the export, retrying on transient errors.
 #[allow(clippy::too_many_arguments)]
-async fn try_walk_with_creds(
+pub(crate) async fn walk_export(
     export: &ExportMsg,
     file_tx: &mpsc::Sender<FileMsg>,
     connector: &dyn NfsConnector,
@@ -126,69 +226,119 @@ async fn try_walk_with_creds(
     retry_delay_ms: u64,
     token: &CancellationToken,
     stats: &PipelineStats,
+    uid_cycle: bool,
+    max_uid_attempts: usize,
+    connect_timeout: Duration,
+    nfs_timeout: Duration,
 ) -> Result<(), WalkerError> {
-    for attempt in 0..=max_retries {
-        let mut client = match connector
-            .connect(&export.host, &export.export_path, creds)
-            .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                let err = WalkerError::from(e);
-                if !is_retryable(&err) || attempt == max_retries {
-                    return Err(err);
-                }
-                tracing::debug!(
-                    host = %export.host,
-                    export = %export.export_path,
-                    attempt = attempt + 1,
-                    max = max_retries + 1,
-                    "connection failed, retrying: {}",
-                    err
-                );
-                backoff_or_cancel(attempt, retry_delay_ms, token).await;
-                continue;
+    walk_with_uid_cycling(
+        export,
+        connector,
+        creds,
+        max_retries,
+        retry_delay_ms,
+        token,
+        connect_timeout,
+        uid_cycle,
+        max_uid_attempts,
+        "",
+        |mut client: Box<dyn NfsOps>| {
+            let export = export.clone();
+            let file_tx = file_tx.clone();
+            let rules_ref = rules;
+            let token = token.clone();
+            let stats_ref = stats;
+            async move {
+                let root = client.root_handle().clone();
+                walk_dir(
+                    &mut *client,
+                    &root,
+                    "",
+                    0,
+                    max_depth,
+                    &export,
+                    &file_tx,
+                    rules_ref,
+                    &token,
+                    stats_ref,
+                    nfs_timeout,
+                )
+                .await
             }
-        };
-
-        let root = client.root_handle().clone();
-        match walk_dir(
-            &mut *client,
-            &root,
-            "",
-            0,
-            max_depth,
-            export,
-            file_tx,
-            rules,
-            token,
-            stats,
-        )
-        .await
-        {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                if !is_retryable(&e) || attempt == max_retries {
-                    return Err(e);
-                }
-                tracing::debug!(
-                    host = %export.host,
-                    export = %export.export_path,
-                    attempt = attempt + 1,
-                    max = max_retries + 1,
-                    "walk failed, retrying: {}",
-                    e
-                );
-                backoff_or_cancel(attempt, retry_delay_ms, token).await;
-            }
-        }
-    }
-
-    unreachable!("retry loop always returns")
+        },
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn walk_dir(
+pub(crate) async fn walk_export_parallel(
+    export: &ExportMsg,
+    file_tx: &mpsc::Sender<FileMsg>,
+    connector: Arc<dyn NfsConnector>,
+    rules: Arc<RuleEngine>,
+    creds: &AuthCreds,
+    max_depth: usize,
+    max_retries: usize,
+    retry_delay_ms: u64,
+    token: &CancellationToken,
+    stats: &Arc<PipelineStats>,
+    uid_cycle: bool,
+    max_uid_attempts: usize,
+    connect_timeout: Duration,
+    nfs_timeout: Duration,
+    parallel_dirs: usize,
+) -> Result<(), WalkerError> {
+    walk_with_uid_cycling(
+        export,
+        &*connector,
+        creds,
+        max_retries,
+        retry_delay_ms,
+        token,
+        connect_timeout,
+        uid_cycle,
+        max_uid_attempts,
+        "parallel",
+        {
+            let connector = Arc::clone(&connector);
+            let rules = Arc::clone(&rules);
+            move |mut client: Box<dyn NfsOps>| {
+                let export = export.clone();
+                let file_tx = file_tx.clone();
+                let connector = Arc::clone(&connector);
+                let rules = Arc::clone(&rules);
+                let creds = creds.clone();
+                let token = token.clone();
+                let stats = Arc::clone(stats);
+                async move {
+                    let root = client.root_handle().clone();
+                    walk_subtrees_parallel(
+                        &mut *client,
+                        &root,
+                        &export,
+                        &file_tx,
+                        connector,
+                        rules,
+                        creds,
+                        max_depth,
+                        nfs_timeout,
+                        connect_timeout,
+                        parallel_dirs,
+                        &token,
+                        &stats,
+                        max_retries,
+                        retry_delay_ms,
+                    )
+                    .await
+                }
+            }
+        },
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn walk_dir(
     client: &mut dyn NfsOps,
     dir_fh: &NfsFh,
     path: &str,
@@ -199,6 +349,7 @@ async fn walk_dir(
     rules: &RuleEngine,
     token: &CancellationToken,
     stats: &PipelineStats,
+    nfs_timeout: Duration,
 ) -> Result<(), WalkerError> {
     if token.is_cancelled() {
         return Ok(());
@@ -208,7 +359,9 @@ async fn walk_dir(
         return Ok(());
     }
 
-    let entries = client.readdirplus(dir_fh).await?;
+    let entries = tokio::time::timeout(nfs_timeout, client.readdirplus(dir_fh))
+        .await
+        .map_err(|_| WalkerError::Timeout(format!("readdirplus timeout on {path}")))??;
     stats.inc_dirs_walked();
 
     for entry in entries {
@@ -238,6 +391,7 @@ async fn walk_dir(
                 rules,
                 token,
                 stats,
+                nfs_timeout,
             ))
             .await
             {
@@ -302,6 +456,8 @@ mod tests {
         AuthCreds, DirEntry, ExportAccessOptions, NfsAttrs, NfsError, NfsFh, NfsFileType,
         NfsVersion,
     };
+
+    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
     fn file_attrs() -> NfsAttrs {
         NfsAttrs {
@@ -391,7 +547,17 @@ mod tests {
         let stats = PipelineStats::default();
 
         let result = walk_dir(
-            &mut mock, &root_fh, "", 0, 50, &export, &tx, &rules, &token, &stats,
+            &mut mock,
+            &root_fh,
+            "",
+            0,
+            50,
+            &export,
+            &tx,
+            &rules,
+            &token,
+            &stats,
+            TEST_TIMEOUT,
         )
         .await;
         assert!(result.is_ok());
@@ -426,7 +592,17 @@ mod tests {
         let stats = PipelineStats::default();
 
         walk_dir(
-            &mut mock, &root_fh, "", 0, 50, &export, &tx, &rules, &token, &stats,
+            &mut mock,
+            &root_fh,
+            "",
+            0,
+            50,
+            &export,
+            &tx,
+            &rules,
+            &token,
+            &stats,
+            TEST_TIMEOUT,
         )
         .await
         .unwrap();
@@ -479,6 +655,7 @@ mod tests {
             &rules,
             &token,
             &stats,
+            TEST_TIMEOUT,
         )
         .await
         .unwrap();
@@ -518,7 +695,17 @@ mod tests {
         let stats = PipelineStats::default();
 
         walk_dir(
-            &mut mock, &root_fh, "", 0, 50, &export, &tx, &rules, &token, &stats,
+            &mut mock,
+            &root_fh,
+            "",
+            0,
+            50,
+            &export,
+            &tx,
+            &rules,
+            &token,
+            &stats,
+            TEST_TIMEOUT,
         )
         .await
         .unwrap();
@@ -551,7 +738,17 @@ mod tests {
         let stats = PipelineStats::default();
 
         walk_dir(
-            &mut mock, &root_fh, "", 0, 50, &export, &tx, &rules, &token, &stats,
+            &mut mock,
+            &root_fh,
+            "",
+            0,
+            50,
+            &export,
+            &tx,
+            &rules,
+            &token,
+            &stats,
+            TEST_TIMEOUT,
         )
         .await
         .unwrap();
@@ -594,7 +791,17 @@ mod tests {
         let stats = PipelineStats::default();
 
         walk_dir(
-            &mut mock, &root_fh, "", 0, 50, &export, &tx, &rules, &token, &stats,
+            &mut mock,
+            &root_fh,
+            "",
+            0,
+            50,
+            &export,
+            &tx,
+            &rules,
+            &token,
+            &stats,
+            TEST_TIMEOUT,
         )
         .await
         .unwrap();
@@ -642,7 +849,17 @@ mod tests {
         let stats = PipelineStats::default();
 
         let result = walk_dir(
-            &mut mock, &root_fh, "", 0, 50, &export, &tx, &rules, &token, &stats,
+            &mut mock,
+            &root_fh,
+            "",
+            0,
+            50,
+            &export,
+            &tx,
+            &rules,
+            &token,
+            &stats,
+            TEST_TIMEOUT,
         )
         .await;
         assert!(result.is_ok());
@@ -688,7 +905,17 @@ mod tests {
         let stats = PipelineStats::default();
 
         let result = walk_dir(
-            &mut mock, &root_fh, "", 0, 50, &export, &tx, &rules, &token, &stats,
+            &mut mock,
+            &root_fh,
+            "",
+            0,
+            50,
+            &export,
+            &tx,
+            &rules,
+            &token,
+            &stats,
+            TEST_TIMEOUT,
         )
         .await;
         assert!(result.is_ok());
@@ -734,7 +961,17 @@ mod tests {
         let stats = PipelineStats::default();
 
         let result = walk_dir(
-            &mut mock, &root_fh, "", 0, 50, &export, &tx, &rules, &token, &stats,
+            &mut mock,
+            &root_fh,
+            "",
+            0,
+            50,
+            &export,
+            &tx,
+            &rules,
+            &token,
+            &stats,
+            TEST_TIMEOUT,
         )
         .await;
         assert!(result.is_ok());
@@ -764,7 +1001,17 @@ mod tests {
         let stats = PipelineStats::default();
 
         let result = walk_dir(
-            &mut mock, &root_fh, "", 0, 50, &export, &tx, &rules, &token, &stats,
+            &mut mock,
+            &root_fh,
+            "",
+            0,
+            50,
+            &export,
+            &tx,
+            &rules,
+            &token,
+            &stats,
+            TEST_TIMEOUT,
         )
         .await;
         assert!(result.is_ok());
@@ -801,7 +1048,17 @@ mod tests {
         let stats = PipelineStats::default();
 
         walk_dir(
-            &mut mock, &root_fh, "", 0, 50, &export, &tx, &rules, &token, &stats,
+            &mut mock,
+            &root_fh,
+            "",
+            0,
+            50,
+            &export,
+            &tx,
+            &rules,
+            &token,
+            &stats,
+            TEST_TIMEOUT,
         )
         .await
         .unwrap();
@@ -842,7 +1099,17 @@ mod tests {
         let stats = PipelineStats::default();
 
         walk_dir(
-            &mut mock, &root_fh, "", 0, 1, &export, &tx, &rules, &token, &stats,
+            &mut mock,
+            &root_fh,
+            "",
+            0,
+            1,
+            &export,
+            &tx,
+            &rules,
+            &token,
+            &stats,
+            TEST_TIMEOUT,
         )
         .await
         .unwrap();
@@ -871,7 +1138,17 @@ mod tests {
         let stats = PipelineStats::default();
 
         let result = walk_dir(
-            &mut mock, &root_fh, "", 0, 0, &export, &tx, &rules, &token, &stats,
+            &mut mock,
+            &root_fh,
+            "",
+            0,
+            0,
+            &export,
+            &tx,
+            &rules,
+            &token,
+            &stats,
+            TEST_TIMEOUT,
         )
         .await;
         assert!(result.is_ok());
@@ -897,7 +1174,17 @@ mod tests {
         let stats = PipelineStats::default();
 
         walk_dir(
-            &mut mock, &root_fh, "", 0, 50, &export, &tx, &rules, &token, &stats,
+            &mut mock,
+            &root_fh,
+            "",
+            0,
+            50,
+            &export,
+            &tx,
+            &rules,
+            &token,
+            &stats,
+            TEST_TIMEOUT,
         )
         .await
         .unwrap();
@@ -950,6 +1237,8 @@ mod tests {
             &stats,
             false,
             5,
+            TEST_TIMEOUT,
+            TEST_TIMEOUT,
         )
         .await
         .unwrap();
@@ -989,6 +1278,8 @@ mod tests {
             &stats,
             false,
             5,
+            TEST_TIMEOUT,
+            TEST_TIMEOUT,
         )
         .await;
 
@@ -1034,6 +1325,8 @@ mod tests {
             &stats,
             false,
             5,
+            TEST_TIMEOUT,
+            TEST_TIMEOUT,
         )
         .await
         .unwrap();
@@ -1084,6 +1377,8 @@ mod tests {
             &stats,
             false,
             5,
+            TEST_TIMEOUT,
+            TEST_TIMEOUT,
         )
         .await
         .unwrap();
@@ -1141,6 +1436,8 @@ mod tests {
             &stats,
             false,
             5,
+            TEST_TIMEOUT,
+            TEST_TIMEOUT,
         )
         .await;
 
@@ -1190,6 +1487,8 @@ mod tests {
             &stats,
             false,
             5,
+            TEST_TIMEOUT,
+            TEST_TIMEOUT,
         )
         .await;
 
@@ -1236,6 +1535,8 @@ mod tests {
             &stats,
             false,
             5,
+            TEST_TIMEOUT,
+            TEST_TIMEOUT,
         )
         .await;
 
@@ -1278,6 +1579,8 @@ mod tests {
             &stats,
             false,
             5,
+            TEST_TIMEOUT,
+            TEST_TIMEOUT,
         )
         .await;
 
@@ -1333,6 +1636,8 @@ mod tests {
             &stats,
             false,
             5,
+            TEST_TIMEOUT,
+            TEST_TIMEOUT,
         )
         .await;
 
@@ -1391,6 +1696,8 @@ mod tests {
             &stats,
             false,
             5,
+            TEST_TIMEOUT,
+            TEST_TIMEOUT,
         )
         .await;
 
@@ -1453,6 +1760,8 @@ mod tests {
             &stats,
             true, // uid_cycle enabled
             5,
+            TEST_TIMEOUT,
+            TEST_TIMEOUT,
         )
         .await;
 
@@ -1503,6 +1812,8 @@ mod tests {
             &stats,
             false, // uid_cycle DISABLED
             5,
+            TEST_TIMEOUT,
+            TEST_TIMEOUT,
         )
         .await;
 
@@ -1552,6 +1863,8 @@ mod tests {
             &stats,
             true,
             2, // max_uid_attempts = 2, even though 5 UIDs are available
+            TEST_TIMEOUT,
+            TEST_TIMEOUT,
         )
         .await;
 
@@ -1606,6 +1919,8 @@ mod tests {
             &stats,
             true,
             5,
+            TEST_TIMEOUT,
+            TEST_TIMEOUT,
         )
         .await;
 

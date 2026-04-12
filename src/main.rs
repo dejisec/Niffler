@@ -9,7 +9,7 @@ use niffler::config::cli::{Cli, NifflerCommand, ScanArgs, Verbosity};
 use niffler::config::settings::ExportFormat;
 use niffler::nfs::{Nfs3Connector, NfsConnector};
 use niffler::output::export::{export_csv, export_json, export_tsv};
-use niffler::pipeline::{IndicatifWriter, run_pipeline};
+use niffler::pipeline::{IndicatifWriter, StatsFormatter, run_pipeline};
 use niffler::web::db::{Database, FindingsQuery};
 
 #[tokio::main]
@@ -64,7 +64,7 @@ async fn run_scan(args: ScanArgs, verbosity: Verbosity) -> Result<()> {
         Verbosity::Error => tracing::Level::ERROR,
     };
 
-    let config = NifflerConfig::from_scan_args(args)?;
+    let mut config = NifflerConfig::from_scan_args(args)?;
 
     if config.generate_config {
         let toml = toml::to_string_pretty(&config)?;
@@ -74,20 +74,15 @@ async fn run_scan(args: ScanArgs, verbosity: Verbosity) -> Result<()> {
 
     // Progress bars always enabled — SQLite is file-backed, progress uses stderr.
     // When --live, findings go to stdout while progress stays on stderr.
-    let multi = Some(MultiProgress::new());
+    let multi = MultiProgress::new();
 
-    if let Some(ref m) = multi {
-        tracing_subscriber::fmt()
-            .with_max_level(level)
-            .with_target(false)
-            .with_writer(IndicatifWriter::new(m.clone()))
-            .init();
-    } else {
-        tracing_subscriber::fmt()
-            .with_max_level(level)
-            .with_target(false)
-            .init();
-    }
+    tracing_subscriber::fmt()
+        .with_max_level(level)
+        .with_target(false)
+        .with_writer(IndicatifWriter::new(multi.clone()))
+        .init();
+
+    let multi = Some(multi);
 
     std::panic::set_hook(Box::new(|info| {
         let location = info.location().map_or_else(String::new, |l| {
@@ -105,6 +100,7 @@ async fn run_scan(args: ScanArgs, verbosity: Verbosity) -> Result<()> {
 
     if config.discovery.proxy.is_some() && config.discovery.privileged_port {
         tracing::warn!("--privileged-port is incompatible with --proxy, ignoring privileged port");
+        config.discovery.privileged_port = false;
     }
 
     let connector: Arc<dyn NfsConnector> = if config.discovery.nfs_version == Some(4) {
@@ -116,9 +112,16 @@ async fn run_scan(args: ScanArgs, verbosity: Verbosity) -> Result<()> {
         }
     };
 
+    let min_severity = config.output.min_severity;
     let stats = run_pipeline(config, connector, None, multi).await?;
 
-    eprintln!("\n{stats}");
+    eprintln!(
+        "\n{}",
+        StatsFormatter {
+            stats: &stats,
+            min_severity
+        }
+    );
 
     Ok(())
 }

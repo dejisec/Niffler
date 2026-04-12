@@ -108,9 +108,9 @@ pub struct ScanArgs {
     #[arg(long, default_value = "65534")]
     pub gid: u32,
 
-    /// Auto-cycle through discovered UIDs on permission denied
-    #[arg(long, default_value_t = true)]
-    pub uid_cycle: bool,
+    /// Disable auto-cycling through discovered UIDs on permission denied
+    #[arg(long)]
+    pub no_uid_cycle: bool,
 
     /// Max UID attempts per file before giving up
     #[arg(long, default_value = "5")]
@@ -120,9 +120,9 @@ pub struct ScanArgs {
     #[arg(long)]
     pub nfs_version: Option<u8>,
 
-    /// Bind source port < 1024
-    #[arg(long, default_value_t = true)]
-    pub privileged_port: bool,
+    /// Disable binding source port < 1024
+    #[arg(long)]
+    pub no_privileged_port: bool,
 
     /// SOCKS5 proxy for all connections (e.g., socks5://127.0.0.1:1080)
     #[arg(long)]
@@ -152,17 +152,53 @@ pub struct ScanArgs {
     #[arg(long, default_value = "50")]
     pub max_depth: usize,
 
+    /// Max concurrent directory listings per export during tree walk
+    #[arg(long, default_value = "8")]
+    pub parallel_dirs: usize,
+
     /// Max retries per export walk on connection loss (0 = no retry)
     #[arg(long, default_value = "2")]
     pub walk_retries: usize,
 
-    /// Base delay in ms between walk retries (linearly scaled: attempt * delay)
+    /// Base delay in ms between walk retries (exponential backoff with jitter)
     #[arg(long, default_value = "500")]
     pub walk_retry_delay: u64,
+
+    /// Max retries per file scan on connection loss (0 = no retry)
+    #[arg(long, default_value = "2")]
+    pub scan_retries: usize,
+
+    /// Base delay in ms between scanner retries (exponential backoff with jitter)
+    #[arg(long, default_value = "200")]
+    pub scan_retry_delay: u64,
+
+    /// Timeout in seconds for establishing NFS connections (TCP + mount)
+    #[arg(long, default_value = "10")]
+    pub connect_timeout: u64,
+
+    /// Timeout in seconds for individual NFS operations (read, readdirplus)
+    #[arg(long, default_value = "30")]
+    pub nfs_timeout: u64,
+
+    /// Timeout in seconds for entire scanner task (defense-in-depth)
+    #[arg(long, default_value = "300")]
+    pub task_timeout: u64,
 
     /// Max file size to read content from (bytes)
     #[arg(long, default_value = "1048576")]
     pub max_scan_size: u64,
+
+    /// NFS read chunk size in bytes
+    #[arg(long, default_value = "1048576")]
+    pub read_chunk_size: u32,
+
+    /// Minimum events in health window before circuit breaker evaluates error rate
+    #[arg(long, default_value = "10")]
+    pub error_threshold: u32,
+
+    /// Cooldown duration in seconds after circuit breaker trips
+    #[arg(long, default_value = "60")]
+    pub cooldown_secs: u64,
 
     /// Attempt subtree_check bypass detection via filehandle manipulation
     #[arg(long)]
@@ -172,7 +208,7 @@ pub struct ScanArgs {
     #[arg(short = 'z', long)]
     pub generate_config: bool,
 
-    /// Load config from file (overrides CLI defaults, CLI flags override config)
+    /// Load config from TOML file (all settings from file, CLI flags ignored)
     #[arg(short = 'c', long)]
     pub config: Option<PathBuf>,
 }
@@ -229,16 +265,31 @@ mod tests {
         assert_eq!(args.scanner_tasks, 50);
         assert_eq!(args.max_connections_per_host, 8);
         assert_eq!(args.max_uid_attempts, 5);
+        assert_eq!(args.connect_timeout, 10);
+        assert_eq!(args.task_timeout, 300);
+        assert_eq!(args.read_chunk_size, 1_048_576);
     }
 
     #[test]
     fn cli_default_bool_flags() {
         let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1"]);
-        assert!(args.uid_cycle);
-        assert!(args.privileged_port);
+        assert!(!args.no_uid_cycle);
+        assert!(!args.no_privileged_port);
         assert!(!args.generate_config);
         assert!(!args.check_subtree_bypass);
         assert!(!args.live);
+    }
+
+    #[test]
+    fn uid_cycle_can_be_disabled() {
+        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1", "--no-uid-cycle"]);
+        assert!(args.no_uid_cycle);
+    }
+
+    #[test]
+    fn privileged_port_can_be_disabled() {
+        let args = parse_scan(&["niffler", "scan", "-t", "10.0.0.1", "--no-privileged-port"]);
+        assert!(args.no_privileged_port);
     }
 
     #[test]

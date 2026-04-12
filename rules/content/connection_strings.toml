@@ -11,11 +11,34 @@ patterns = [
     "(?i)amqp://[^\\s\"']{10,}",
     "(?i)mssql://[^\\s\"']{10,}",
     "(?i)ldap(s)?://[^\\s\"']{10,}",
-    '(?i)DSN\s*=\s*[^\s;]{4,}',
-    '(?i)Data\s+Source\s*=\s*[^\s;]{4,}',
+
+    # Only match DSN when credentials are co-located in the same connection string
+    '(?i)DSN\s*=\s*[^\s;]{4,}\s*;\s*(?:UID|User\s*ID|PWD|Password)\s*=',
+    '(?i)Data\s+Source\s*=\s*[^\s;]{4,}\s*;\s*(?:User\s*ID|UID|Password|PWD)\s*=',
 ]
 action = "Snaffle"
 triage = "Red"
+skip_comments = true
+exclude_patterns = [
+    '(?i)(example\.com|localhost:0000|your.?host|CHANGE.?ME|placeholder)',
+    '(?i)localhost[:/]',
+    '(?i)xmlns[.:]',
+    '(?i)noNamespaceSchemaLocation',
+
+    # Format-string placeholders (message catalogs)
+    '%[sdiuxX]',
+    '\{[0-9]+\}',
+
+    # Example/doc host patterns
+    '(?i)myoid\.us\.oracle\.com',
+    '(?i)(foo|bar|baz|example|sample)\.(com|org|local)',
+]
+exclude_file_paths = [
+    '(?i)\.(pod|[1-9]|htm|html|msg|xsl|trc)$',
+    '(?i)/perl/man/',
+    '(?i)/network/tools/help/',
+    '(?i)/odbc/help/',
+]
 max_size = 1048576
 context_bytes = 200
 description = "Database and service connection strings with embedded credentials"

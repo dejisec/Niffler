@@ -7,6 +7,7 @@ pub struct AuthCreds {
 }
 
 impl AuthCreds {
+    #[must_use]
     pub fn root() -> Self {
         Self {
             uid: 0,
@@ -15,6 +16,7 @@ impl AuthCreds {
         }
     }
 
+    #[must_use]
     pub fn nobody() -> Self {
         Self {
             uid: 65534,
@@ -23,6 +25,7 @@ impl AuthCreds {
         }
     }
 
+    #[must_use]
     pub fn new(uid: u32, gid: u32) -> Self {
         Self {
             uid,
@@ -46,6 +49,7 @@ pub struct AuthStrategy {
 }
 
 impl AuthStrategy {
+    #[must_use]
     pub fn new(primary: AuthCreds) -> Self {
         Self {
             primary,

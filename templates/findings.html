@@ -3,6 +3,35 @@
 {% block content %}
 <h1 class="page-title">Findings</h1>
 
+<script>
+function setShow(btn, value) {
+    document.getElementById('show-input').value = value;
+    btn.parentElement.querySelectorAll('.show-toggle-btn').forEach(function(b) {
+        b.classList.remove('active');
+    });
+    btn.classList.add('active');
+}
+function setSort(column) {
+    var si = document.getElementById('sort-input');
+    var di = document.getElementById('dir-input');
+    if (si.value === column) {
+        di.value = di.value === 'asc' ? 'desc' : 'asc';
+    } else {
+        si.value = column;
+        di.value = 'desc';
+    }
+}
+function clearFilters() {
+    document.querySelector('select[name="triage"]').value = '';
+    document.getElementById('host-select').value = '';
+    document.getElementById('rule-select').value = '';
+    document.querySelector('input[name="q"]').value = '';
+    document.getElementById('sort-input').value = 'timestamp';
+    document.getElementById('dir-input').value = 'desc';
+    setShow(document.querySelector('.show-toggle-btn'), 'all');
+}
+</script>
+
 <form id="findings-form" class="filter-bar" hx-get="/api/findings" hx-target="#findings-tbody" hx-swap="innerHTML" hx-trigger="submit" hx-include="#findings-form">
     <select name="triage" class="filter-select" hx-get="/api/findings" hx-trigger="change" hx-target="#findings-tbody" hx-swap="innerHTML" hx-include="#findings-form">
         <option value="">All Severities</option>
@@ -12,14 +41,14 @@
         <option value="Green"{% if current_triage == "Green" %} selected{% endif %}>Green</option>
     </select>
 
-    <select name="host" class="filter-select" hx-get="/api/findings" hx-trigger="change" hx-target="#findings-tbody" hx-swap="innerHTML" hx-include="#findings-form">
+    <select id="host-select" name="host" class="filter-select" hx-get="/api/findings" hx-trigger="change" hx-target="#findings-tbody" hx-swap="innerHTML" hx-include="#findings-form">
         <option value="">All Hosts</option>
         {% for h in hosts %}
         <option value="{{ h }}"{% if current_host.as_str() == h.as_str() %} selected{% endif %}>{{ h }}</option>
         {% endfor %}
     </select>
 
-    <select name="rule" class="filter-select" hx-get="/api/findings" hx-trigger="change" hx-target="#findings-tbody" hx-swap="innerHTML" hx-include="#findings-form">
+    <select id="rule-select" name="rule" class="filter-select" hx-get="/api/findings" hx-trigger="change" hx-target="#findings-tbody" hx-swap="innerHTML" hx-include="#findings-form">
         <option value="">All Rules</option>
         {% for r in rules %}
         <option value="{{ r }}"{% if current_rule.as_str() == r.as_str() %} selected{% endif %}>{{ r }}</option>
@@ -38,19 +67,22 @@
     <div class="show-toggle">
         <button type="button" class="show-toggle-btn{% if current_show == "" || current_show == "all" %} active{% endif %}"
             hx-get="/api/findings" hx-target="#findings-tbody" hx-swap="innerHTML"
-            hx-include="#findings-form" hx-vals='{"show": "all"}'>All</button>
+            hx-include="#findings-form" onclick="setShow(this, 'all')">All</button>
         <button type="button" class="show-toggle-btn{% if current_show == "starred" %} active{% endif %}"
             hx-get="/api/findings" hx-target="#findings-tbody" hx-swap="innerHTML"
-            hx-include="#findings-form" hx-vals='{"show": "starred"}'>Starred</button>
+            hx-include="#findings-form" onclick="setShow(this, 'starred')">Starred</button>
         <button type="button" class="show-toggle-btn{% if current_show == "unreviewed" %} active{% endif %}"
             hx-get="/api/findings" hx-target="#findings-tbody" hx-swap="innerHTML"
-            hx-include="#findings-form" hx-vals='{"show": "unreviewed"}'>Unreviewed</button>
+            hx-include="#findings-form" onclick="setShow(this, 'unreviewed')">Unreviewed</button>
     </div>
 
     <a href="/api/export/csv" class="export-btn"
        onclick="event.preventDefault(); var p = new URLSearchParams(new FormData(document.getElementById('findings-form'))); window.location = '/api/export/csv?' + p.toString();">Export CSV</a>
     <a href="/api/export/json" class="export-btn"
        onclick="event.preventDefault(); var p = new URLSearchParams(new FormData(document.getElementById('findings-form'))); window.location = '/api/export/json?' + p.toString();">Export JSON</a>
+    <button type="button" class="clear-btn" onclick="clearFilters()"
+        hx-get="/api/findings" hx-target="#findings-tbody" hx-swap="innerHTML"
+        hx-include="#findings-form">Clear</button>
 </form>
 
 <table class="data-table">
@@ -59,39 +91,35 @@
             <th style="width:2rem"></th>
             <th class="sortable"
                 hx-get="/api/findings" hx-target="#findings-tbody" hx-swap="innerHTML"
-                hx-include="#findings-form"
-                hx-vals='{"sort": "triage", "dir": "{% if current_sort == "triage" && current_dir == "desc" %}asc{% else %}desc{% endif %}"}'>
-                Severity <span class="sort-indicator{% if current_sort == "triage" %} active{% endif %}">{% if current_sort == "triage" %}{% if current_dir == "asc" %}&uarr;{% else %}&darr;{% endif %}{% else %}&darr;{% endif %}</span>
+                hx-include="#findings-form" onclick="setSort('triage')">
+                Severity {% if current_sort == "triage" %}<span class="sort-indicator active">{% if current_dir == "asc" %}&uarr;{% else %}&darr;{% endif %}</span>{% endif %}
             </th>
             <th class="sortable"
                 hx-get="/api/findings" hx-target="#findings-tbody" hx-swap="innerHTML"
-                hx-include="#findings-form"
-                hx-vals='{"sort": "rule_name", "dir": "{% if current_sort == "rule_name" && current_dir == "desc" %}asc{% else %}desc{% endif %}"}'>
-                Rule <span class="sort-indicator{% if current_sort == "rule_name" %} active{% endif %}">{% if current_sort == "rule_name" %}{% if current_dir == "asc" %}&uarr;{% else %}&darr;{% endif %}{% else %}&darr;{% endif %}</span>
+                hx-include="#findings-form" onclick="setSort('rule_name')">
+                Rule {% if current_sort == "rule_name" %}<span class="sort-indicator active">{% if current_dir == "asc" %}&uarr;{% else %}&darr;{% endif %}</span>{% endif %}
+            </th>
+            <th>Pattern</th>
+            <th class="sortable"
+                hx-get="/api/findings" hx-target="#findings-tbody" hx-swap="innerHTML"
+                hx-include="#findings-form" onclick="setSort('host')">
+                Host {% if current_sort == "host" %}<span class="sort-indicator active">{% if current_dir == "asc" %}&uarr;{% else %}&darr;{% endif %}</span>{% endif %}
             </th>
             <th class="sortable"
                 hx-get="/api/findings" hx-target="#findings-tbody" hx-swap="innerHTML"
-                hx-include="#findings-form"
-                hx-vals='{"sort": "host", "dir": "{% if current_sort == "host" && current_dir == "desc" %}asc{% else %}desc{% endif %}"}'>
-                Host <span class="sort-indicator{% if current_sort == "host" %} active{% endif %}">{% if current_sort == "host" %}{% if current_dir == "asc" %}&uarr;{% else %}&darr;{% endif %}{% else %}&darr;{% endif %}</span>
+                hx-include="#findings-form" onclick="setSort('file_path')">
+                Path {% if current_sort == "file_path" %}<span class="sort-indicator active">{% if current_dir == "asc" %}&uarr;{% else %}&darr;{% endif %}</span>{% endif %}
+            </th>
+            <th>Context</th>
+            <th class="sortable"
+                hx-get="/api/findings" hx-target="#findings-tbody" hx-swap="innerHTML"
+                hx-include="#findings-form" onclick="setSort('file_size')">
+                Size {% if current_sort == "file_size" %}<span class="sort-indicator active">{% if current_dir == "asc" %}&uarr;{% else %}&darr;{% endif %}</span>{% endif %}
             </th>
             <th class="sortable"
                 hx-get="/api/findings" hx-target="#findings-tbody" hx-swap="innerHTML"
-                hx-include="#findings-form"
-                hx-vals='{"sort": "file_path", "dir": "{% if current_sort == "file_path" && current_dir == "desc" %}asc{% else %}desc{% endif %}"}'>
-                Path <span class="sort-indicator{% if current_sort == "file_path" %} active{% endif %}">{% if current_sort == "file_path" %}{% if current_dir == "asc" %}&uarr;{% else %}&darr;{% endif %}{% else %}&darr;{% endif %}</span>
-            </th>
-            <th class="sortable"
-                hx-get="/api/findings" hx-target="#findings-tbody" hx-swap="innerHTML"
-                hx-include="#findings-form"
-                hx-vals='{"sort": "file_size", "dir": "{% if current_sort == "file_size" && current_dir == "desc" %}asc{% else %}desc{% endif %}"}'>
-                Size <span class="sort-indicator{% if current_sort == "file_size" %} active{% endif %}">{% if current_sort == "file_size" %}{% if current_dir == "asc" %}&uarr;{% else %}&darr;{% endif %}{% else %}&darr;{% endif %}</span>
-            </th>
-            <th class="sortable"
-                hx-get="/api/findings" hx-target="#findings-tbody" hx-swap="innerHTML"
-                hx-include="#findings-form"
-                hx-vals='{"sort": "timestamp", "dir": "{% if current_sort == "timestamp" && current_dir == "desc" %}asc{% else %}desc{% endif %}"}'>
-                Time <span class="sort-indicator{% if current_sort == "timestamp" %} active{% endif %}">{% if current_sort == "timestamp" %}{% if current_dir == "asc" %}&uarr;{% else %}&darr;{% endif %}{% else %}&darr;{% endif %}</span>
+                hx-include="#findings-form" onclick="setSort('timestamp')">
+                Date {% if current_sort == "timestamp" %}<span class="sort-indicator active">{% if current_dir == "asc" %}&uarr;{% else %}&darr;{% endif %}</span>{% endif %}
             </th>
             <th style="width:4rem">Actions</th>
         </tr>
@@ -101,21 +129,5 @@
     </tbody>
 </table>
 
-<div id="findings-pagination" class="pagination">
-    <span class="pagination-info">Showing {{ showing_start }}&ndash;{{ showing_end }} of {{ total }}</span>
-    {% if page > 1 %}
-    <button class="pagination-btn"
-        hx-get="/api/findings?page={{ page - 1 }}&amp;per_page={{ per_page }}"
-        hx-target="#findings-tbody" hx-swap="innerHTML" hx-include="#findings-form">&larr; Prev</button>
-    {% else %}
-    <button class="pagination-btn" disabled>&larr; Prev</button>
-    {% endif %}
-    {% if page < total_pages %}
-    <button class="pagination-btn"
-        hx-get="/api/findings?page={{ page + 1 }}&amp;per_page={{ per_page }}"
-        hx-target="#findings-tbody" hx-swap="innerHTML" hx-include="#findings-form">Next &rarr;</button>
-    {% else %}
-    <button class="pagination-btn" disabled>Next &rarr;</button>
-    {% endif %}
-</div>
+<div id="findings-pagination" class="pagination"></div>
 {% endblock %}

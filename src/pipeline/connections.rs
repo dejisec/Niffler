@@ -11,13 +11,16 @@ pub struct HostConnectionPool {
 }
 
 impl HostConnectionPool {
+    #[must_use]
     pub fn new(max_connections: usize) -> Self {
+        let max_connections = max_connections.max(1);
         Self {
             inner: DashMap::new(),
             max_connections,
         }
     }
 
+    #[must_use]
     pub fn get_semaphore(&self, host: &str) -> Arc<Semaphore> {
         self.inner
             .entry(host.to_string())

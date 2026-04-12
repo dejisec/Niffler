@@ -103,7 +103,7 @@ impl FindingsParams {
                 _ => SortDir::Desc,
             },
             page: 1,
-            per_page: i64::MAX as u64,
+            per_page: 1_000_000,
             show: match s.show.as_deref() {
                 Some("starred") => ShowFilter::Starred,
                 Some("unreviewed") => ShowFilter::Unreviewed,
@@ -116,6 +116,7 @@ impl FindingsParams {
 // ── Shared findings data helper ───────────────────────────
 
 struct FindingsData {
+    query: FindingsQuery,
     findings: Vec<super::db::Finding>,
     total: u64,
     page: u64,
@@ -161,6 +162,7 @@ async fn fetch_findings_data(db: &Database, params: FindingsParams) -> FindingsD
     let showing_end = showing_start.saturating_sub(1) + findings.len() as u64;
 
     FindingsData {
+        query,
         findings,
         total,
         page,
@@ -239,8 +241,16 @@ pub async fn findings(
     Query(params): Query<FindingsParams>,
 ) -> FindingsTemplate {
     let data = fetch_findings_data(&state.db, params).await;
-    let hosts = state.db.distinct_hosts(None).await.unwrap_or_default();
-    let rules = state.db.distinct_rules(None).await.unwrap_or_default();
+    let hosts = state
+        .db
+        .distinct_hosts_filtered(&data.query)
+        .await
+        .unwrap_or_default();
+    let rules = state
+        .db
+        .distinct_rules_filtered(&data.query)
+        .await
+        .unwrap_or_default();
 
     FindingsTemplate {
         active_nav: "findings",
@@ -253,6 +263,7 @@ pub async fn findings(
         showing_end: data.showing_end,
         hosts,
         rules,
+        is_fragment: false,
         current_triage: data.current_triage,
         current_host: data.current_host,
         current_rule: data.current_rule,
@@ -286,6 +297,16 @@ pub async fn api_findings(
     Query(params): Query<FindingsParams>,
 ) -> FindingsRowsTemplate {
     let data = fetch_findings_data(&state.db, params).await;
+    let hosts = state
+        .db
+        .distinct_hosts_filtered(&data.query)
+        .await
+        .unwrap_or_default();
+    let rules = state
+        .db
+        .distinct_rules_filtered(&data.query)
+        .await
+        .unwrap_or_default();
 
     FindingsRowsTemplate {
         findings: data.findings,
@@ -295,6 +316,9 @@ pub async fn api_findings(
         total_pages: data.total_pages,
         showing_start: data.showing_start,
         showing_end: data.showing_end,
+        hosts,
+        rules,
+        is_fragment: true,
         current_triage: data.current_triage,
         current_host: data.current_host,
         current_rule: data.current_rule,
@@ -367,8 +391,14 @@ pub async fn api_host_exports(
     HostExportsTemplate { exports: details }
 }
 
-pub async fn api_stats() -> StatusCode {
-    StatusCode::NOT_IMPLEMENTED
+pub async fn api_stats(State(state): State<Arc<AppState>>) -> Response {
+    match state.db.get_stats().await {
+        Ok(stats) => axum::Json(stats).into_response(),
+        Err(e) => {
+            tracing::error!("stats query failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 // ── Export routes ─────────────────────────────────────────
@@ -380,7 +410,8 @@ pub async fn api_export_csv(
     let query = params.into_export_query();
     let findings = state.db.list_findings(&query).await.unwrap_or_default();
     let mut buf = Vec::new();
-    if crate::output::export::export_csv(&findings, &mut buf).is_err() {
+    if let Err(e) = crate::output::export::export_csv(&findings, &mut buf) {
+        tracing::error!("CSV export failed: {e}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     (
@@ -404,7 +435,8 @@ pub async fn api_export_json(
     let query = params.into_export_query();
     let findings = state.db.list_findings(&query).await.unwrap_or_default();
     let mut buf = Vec::new();
-    if crate::output::export::export_json(&findings, &mut buf).is_err() {
+    if let Err(e) = crate::output::export::export_json(&findings, &mut buf) {
+        tracing::error!("JSON export failed: {e}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     (

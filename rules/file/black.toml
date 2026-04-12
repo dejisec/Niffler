@@ -92,7 +92,7 @@ name = "DatabaseFileExtensions"
 scope = "FileEnumeration"
 match_location = "FileExtension"
 match_type = "Exact"
-patterns = ["mdf", "ldf", "sqlite", "sqlite3", "db"]
+patterns = ["mdf", "ldf", "sqlite", "sqlite3"]
 action = "Snaffle"
 triage = "Black"
 description = "Database files that may contain stored credentials or sensitive data"
@@ -187,5 +187,35 @@ match_location = "FileExtension"
 match_type = "Exact"
 patterns = ["pgp", "gpg", "asc"]
 action = "Relay"
-relay_targets = ["CryptoPatterns"]
+relay_targets = ["CryptoPrivateKeys"]
 description = "PGP/GPG files -- relay to content scan for private key detection"
+
+[[rules]]
+name = "JavaKeyStoreExtensions"
+scope = "FileEnumeration"
+match_location = "FileExtension"
+match_type = "Exact"
+patterns = ["jks", "keystore", "p8"]
+action = "Snaffle"
+triage = "Black"
+description = "Java KeyStore, Android keystore, Apple push notification keys"
+
+[[rules]]
+name = "MacOsKeychainFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = ["login.keychain", "login.keychain-db"]
+action = "Snaffle"
+triage = "Black"
+description = "macOS Keychain database files"
+
+[[rules]]
+name = "ConsulTokenFiles"
+scope = "FileEnumeration"
+match_location = "FileName"
+match_type = "Exact"
+patterns = [".consul-token"]
+action = "Snaffle"
+triage = "Black"
+description = "HashiCorp Consul token files"

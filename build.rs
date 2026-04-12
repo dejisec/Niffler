@@ -1,8 +1,9 @@
 fn main() {
     let target_family = std::env::var("CARGO_CFG_TARGET_FAMILY").unwrap_or_default();
-    if target_family != "unix" {
-        panic!("Niffler requires a Unix target (NFS is not available on Windows)");
-    }
+    assert!(
+        target_family == "unix",
+        "Niffler requires a Unix target (NFS is not available on Windows)"
+    );
 
     println!("cargo:rerun-if-changed=build.rs");
 

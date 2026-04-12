@@ -4,6 +4,8 @@ use std::sync::atomic::Ordering::Relaxed;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tracing_subscriber::fmt::MakeWriter;
 
+use crate::classifier::Triage;
+
 use super::PipelineStats;
 
 /// Factory that produces line-buffered writers routing tracing output through
@@ -14,6 +16,7 @@ pub struct IndicatifWriter {
 }
 
 impl IndicatifWriter {
+    #[must_use]
     pub fn new(multi: MultiProgress) -> Self {
         Self { multi }
     }
@@ -65,22 +68,22 @@ pub struct ProgressDisplay {
     walker_bar: Option<ProgressBar>,
     scanner_bar: Option<ProgressBar>,
     findings_bar: Option<ProgressBar>,
+    output_bar: Option<ProgressBar>,
 }
 
 impl ProgressDisplay {
     /// Create a new progress display. Pass `Some(multi)` to enable progress bars,
     /// `None` to disable them (e.g. when writing to a file or non-console format).
-    pub fn new(multi: Option<MultiProgress>) -> Self {
-        let multi = match multi {
-            Some(m) => m,
-            None => {
-                return Self {
-                    discovery_bar: None,
-                    walker_bar: None,
-                    scanner_bar: None,
-                    findings_bar: None,
-                };
-            }
+    #[must_use]
+    pub fn new(multi: Option<MultiProgress>, min_severity: Triage) -> Self {
+        let Some(multi) = multi else {
+            return Self {
+                discovery_bar: None,
+                walker_bar: None,
+                scanner_bar: None,
+                findings_bar: None,
+                output_bar: None,
+            };
         };
 
         let spinner = ProgressStyle::with_template("{spinner:.green} {msg}: {pos}")
@@ -99,14 +102,19 @@ impl ProgressDisplay {
         scanner_bar.set_message("Scanning (files)");
 
         let findings_bar = multi.add(ProgressBar::new_spinner());
-        findings_bar.set_style(spinner);
-        findings_bar.set_message("Findings");
+        findings_bar.set_style(spinner.clone());
+        findings_bar.set_message("Matches (all)".to_string());
+
+        let output_bar = multi.add(ProgressBar::new_spinner());
+        output_bar.set_style(spinner);
+        output_bar.set_message(format!("Findings (>= {min_severity})"));
 
         Self {
             discovery_bar: Some(discovery_bar),
             walker_bar: Some(walker_bar),
             scanner_bar: Some(scanner_bar),
             findings_bar: Some(findings_bar),
+            output_bar: Some(output_bar),
         }
     }
 
@@ -123,6 +131,9 @@ impl ProgressDisplay {
         if let Some(ref bar) = self.findings_bar {
             bar.set_position(stats.findings.load(Relaxed));
         }
+        if let Some(ref bar) = self.output_bar {
+            bar.set_position(stats.findings_written.load(Relaxed));
+        }
     }
 
     pub fn finish(&self) {
@@ -136,6 +147,9 @@ impl ProgressDisplay {
             bar.finish_with_message("Scanning (done)");
         }
         if let Some(ref bar) = self.findings_bar {
+            bar.finish_with_message("Matches (done)");
+        }
+        if let Some(ref bar) = self.output_bar {
             bar.finish_with_message("Findings (done)");
         }
     }

@@ -4,9 +4,16 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Niffler{% endblock %}</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1F943;</text></svg>">
     <link rel="stylesheet" href="/static/css/niffler.css">
     <script src="/static/js/htmx.min.js" defer></script>
     <script>
+    document.addEventListener('htmx:beforeRequest', function() {
+        document.body.classList.add('htmx-request');
+    });
+    document.addEventListener('htmx:afterRequest', function() {
+        document.body.classList.remove('htmx-request');
+    });
     function toggleDetail(btn, id) {
         var row = btn.closest('tr');
         var el = row.nextElementSibling;
@@ -20,12 +27,40 @@
             el.style.display = '';
             btn.innerHTML = '\u25BC';
             btn.classList.add('expanded');
-            htmx.ajax('GET', '/api/findings/' + id, {target: el, swap: 'outerHTML'});
+            if (typeof htmx !== 'undefined') {
+                htmx.ajax('GET', '/api/findings/' + id, {target: el, swap: 'outerHTML'});
+            } else {
+                el.style.display = el.style.display === 'none' ? '' : 'none';
+            }
+        }
+    }
+    function toggleHost(headerEl) {
+        var host = headerEl.dataset.host;
+        if (!host) return;
+        var group = headerEl.parentElement;
+        var exports = group.querySelector('.host-exports');
+        if (!exports) return;
+        if (headerEl.classList.contains('expanded')) {
+            exports.style.display = 'none';
+            headerEl.classList.remove('expanded');
+            return;
+        }
+        exports.style.display = '';
+        headerEl.classList.add('expanded');
+        if (!headerEl.dataset.loaded) {
+            headerEl.dataset.loaded = '1';
+            if (typeof htmx !== 'undefined') {
+                htmx.ajax('GET', '/api/hosts/' + encodeURIComponent(host) + '/exports', {
+                    target: exports,
+                    swap: 'innerHTML'
+                });
+            }
         }
     }
     </script>
 </head>
 <body>
+    <div class="htmx-indicator"></div>
     <nav class="nav">
         <span class="nav-brand">NIFFLER</span>
         <ul class="nav-links">

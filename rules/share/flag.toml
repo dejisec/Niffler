@@ -6,6 +6,7 @@ match_type = "Exact"
 patterns = [
     "/home", "/etc", "/root", "/opt", "/var/www",
     "/srv", "/export", "/exports", "/backup", "/backups",
+    "/data", "/share", "/nfs", "/mnt",
 ]
 action = "Snaffle"
 triage = "Green"

@@ -1,20 +1,23 @@
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use tokio_util::sync::CancellationToken;
 
 use crate::classifier::{FileEntry, Finding, MatchLocation, RuleEngine, Triage};
 use crate::config::OperatingMode;
 use crate::nfs::{AuthCreds, AuthStrategy, ErrorClass, NfsAttrs, NfsConnector, NfsFh};
-use crate::pipeline::{FileMsg, FileReader, HostHealthRegistry, PipelineStats, ResultMsg};
+use crate::pipeline::{
+    FileMsg, FileReader, HostHealthRegistry, PipelineStats, ResultMsg, RetryPolicy,
+};
 
-use super::cache::ConnectionCache;
 use super::content::{is_likely_binary, read_for_scan, read_local_for_scan};
 use super::context::{extract_context, extract_context_bytes};
 use super::error::ScannerError;
 use super::keys::inspect_key_material;
+use super::pool::SharedConnectionPool;
 
-/// Read file content with 3-tier UID cycling: primary → owner → harvested.
-/// On PermissionDenied, cycles to next credential set. Other errors propagate immediately.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn read_with_uid_cycling(
     connector: &dyn NfsConnector,
@@ -23,28 +26,58 @@ pub(crate) async fn read_with_uid_cycling(
     fh: &NfsFh,
     attrs: &NfsAttrs,
     auth: &AuthStrategy,
-    conn_cache: &mut ConnectionCache,
+    pool: &Arc<SharedConnectionPool>,
     max_scan_size: u64,
+    nfs_timeout: Duration,
+    chunk_size: u32,
 ) -> Result<Vec<u8>, ScannerError> {
     // 1. Try primary credentials
-    let client = conn_cache
-        .get_or_connect(connector, host, export, &auth.primary)
+    let mut conn = pool
+        .checkout(connector, host, export, &auth.primary)
         .await?;
-    match read_for_scan(client, fh, max_scan_size, attrs.size).await {
+    match read_for_scan(
+        conn.ops_mut(),
+        fh,
+        max_scan_size,
+        attrs.size,
+        nfs_timeout,
+        chunk_size,
+    )
+    .await
+    {
         Ok(data) => return Ok(data),
-        Err(e) if e.classify() == ErrorClass::PermissionDenied && auth.auto_cycle => {}
+        Err(e) if e.classify() == ErrorClass::PermissionDenied && auth.auto_cycle => {
+            drop(conn);
+        }
+        Err(e) if e.classify() == ErrorClass::ConnectionLost => {
+            conn.poison();
+            return Err(e);
+        }
         Err(e) => return Err(e),
     }
 
     // 2. Try owner UID (stat-guided)
     let owner_creds = AuthCreds::new(attrs.uid, attrs.gid);
     if owner_creds != auth.primary {
-        let client = conn_cache
-            .get_or_connect(connector, host, export, &owner_creds)
-            .await?;
-        match read_for_scan(client, fh, max_scan_size, attrs.size).await {
+        let mut conn = pool.checkout(connector, host, export, &owner_creds).await?;
+        match read_for_scan(
+            conn.ops_mut(),
+            fh,
+            max_scan_size,
+            attrs.size,
+            nfs_timeout,
+            chunk_size,
+        )
+        .await
+        {
             Ok(data) => return Ok(data),
-            Err(e) if e.classify() == ErrorClass::PermissionDenied => {}
+            Err(e) if e.classify() == ErrorClass::PermissionDenied => {
+                drop(conn);
+            }
+            Err(e) if e.classify() == ErrorClass::ConnectionLost => {
+                conn.poison();
+                return Err(e);
+            }
             Err(e) => return Err(e),
         }
     }
@@ -59,12 +92,26 @@ pub(crate) async fn read_with_uid_cycling(
             break;
         }
         unique_attempts += 1;
-        let client = conn_cache
-            .get_or_connect(connector, host, export, creds)
-            .await?;
-        match read_for_scan(client, fh, max_scan_size, attrs.size).await {
+        let mut conn = pool.checkout(connector, host, export, creds).await?;
+        match read_for_scan(
+            conn.ops_mut(),
+            fh,
+            max_scan_size,
+            attrs.size,
+            nfs_timeout,
+            chunk_size,
+        )
+        .await
+        {
             Ok(data) => return Ok(data),
-            Err(e) if e.classify() == ErrorClass::PermissionDenied => continue,
+            Err(e) if e.classify() == ErrorClass::PermissionDenied => {
+                drop(conn);
+                continue;
+            }
+            Err(e) if e.classify() == ErrorClass::ConnectionLost => {
+                conn.poison();
+                return Err(e);
+            }
             Err(e) => return Err(e),
         }
     }
@@ -113,8 +160,6 @@ fn finding_to_result(finding: &Finding, msg: &FileMsg) -> ResultMsg {
     }
 }
 
-/// Per-file scan orchestration: name rules → content read → content rules → key inspection.
-/// Returns Vec<ResultMsg>, NEVER Err (invariant #7).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn scan_file(
     msg: &FileMsg,
@@ -123,9 +168,14 @@ pub(crate) async fn scan_file(
     auth: &AuthStrategy,
     mode: OperatingMode,
     max_scan_size: u64,
-    conn_cache: &mut ConnectionCache,
+    chunk_size: u32,
+    pool: &Arc<SharedConnectionPool>,
     stats: &PipelineStats,
     health: &HostHealthRegistry,
+    nfs_timeout: Duration,
+    max_retries: usize,
+    retry_base_delay_ms: u64,
+    token: &CancellationToken,
 ) -> Vec<ResultMsg> {
     let entry = file_entry_from_msg(msg);
     let mut results = Vec::new();
@@ -161,42 +211,75 @@ pub(crate) async fn scan_file(
 
     let data = match &msg.reader {
         FileReader::Nfs { host, export } => {
-            match read_with_uid_cycling(
-                connector,
-                host,
-                export,
-                &msg.file_handle,
-                &msg.attrs,
-                effective_auth,
-                conn_cache,
-                max_scan_size,
-            )
-            .await
-            {
-                Ok(data) => {
-                    health.record_success(host);
-                    data
-                }
-                Err(e) => {
-                    match e.classify() {
-                        ErrorClass::PermissionDenied => stats
-                            .files_skipped_permission
-                            .fetch_add(1, Ordering::Relaxed),
-                        ErrorClass::Stale => stats.errors_stale.fetch_add(1, Ordering::Relaxed),
-                        ErrorClass::ConnectionLost => {
-                            stats.errors_connection.fetch_add(1, Ordering::Relaxed)
+            let policy = RetryPolicy::new(
+                Duration::from_millis(retry_base_delay_ms),
+                Duration::from_secs(30),
+                max_retries,
+            );
+            let mut last_data = None;
+
+            for attempt in 0..=max_retries {
+                match read_with_uid_cycling(
+                    connector,
+                    host,
+                    export,
+                    &msg.file_handle,
+                    &msg.attrs,
+                    effective_auth,
+                    pool,
+                    max_scan_size,
+                    nfs_timeout,
+                    chunk_size,
+                )
+                .await
+                {
+                    Ok(data) => {
+                        health.record_success(host);
+                        last_data = Some(data);
+                        break;
+                    }
+                    Err(e) => {
+                        let class = e.classify();
+                        if matches!(class, ErrorClass::ConnectionLost | ErrorClass::Transient)
+                            && attempt < max_retries
+                        {
+                            stats.inc_scanner_retries();
+                            tracing::debug!(
+                                host,
+                                file = %msg.file_path,
+                                attempt = attempt + 1,
+                                "scanner read failed, retrying: {}",
+                                e
+                            );
+                            if policy.backoff_or_cancel(attempt, token).await.is_err() {
+                                return results;
+                            }
+                            continue;
                         }
-                        _ => stats.errors_transient.fetch_add(1, Ordering::Relaxed),
-                    };
-                    health.record_error(host);
-                    return results;
+                        match class {
+                            ErrorClass::PermissionDenied => stats
+                                .files_skipped_permission
+                                .fetch_add(1, Ordering::Relaxed),
+                            ErrorClass::Stale => stats.errors_stale.fetch_add(1, Ordering::Relaxed),
+                            ErrorClass::ConnectionLost => {
+                                stats.errors_connection.fetch_add(1, Ordering::Relaxed)
+                            }
+                            _ => stats.errors_transient.fetch_add(1, Ordering::Relaxed),
+                        };
+                        health.record_error(host);
+                        return results;
+                    }
                 }
             }
+
+            last_data.expect("loop always breaks with data or returns")
         }
-        FileReader::Local { path } => match read_local_for_scan(path, max_scan_size) {
-            Ok(data) => data,
-            Err(_) => return results,
-        },
+        FileReader::Local { path } => {
+            match read_local_for_scan(path.clone(), max_scan_size).await {
+                Ok(data) => data,
+                Err(_) => return results,
+            }
+        }
     };
 
     stats.files_content_scanned.fetch_add(1, Ordering::Relaxed);
@@ -215,7 +298,8 @@ pub(crate) async fn scan_file(
 
     // 5. Evaluate content rules (engine handles binary detection internally)
     // Re-evaluate with content — this re-runs file rules but also follows relay chains to content rules.
-    // Deduplicate: skip findings already found in the name-only pass.
+    // Deduplicate by rule_name: safe because RuleEngine::compile() enforces unique names,
+    // so the same rule always matches identically for a given input.
     let name_rule_names: Vec<String> = name_findings.iter().map(|f| f.rule_name.clone()).collect();
     let content_findings = rules.evaluate_file(&entry, Some(&data));
     let text = String::from_utf8_lossy(&data);
@@ -293,11 +377,35 @@ mod tests {
     use crate::nfs::connector::MockNfsConnector;
     use crate::nfs::ops::MockNfsOps;
     use crate::nfs::{NfsError, NfsFileType, ReadResult};
+    use crate::scanner::content::DEFAULT_CHUNK_SIZE;
     use chrono::Datelike;
     use std::path::PathBuf;
 
+    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+    fn test_pool() -> Arc<SharedConnectionPool> {
+        Arc::new(SharedConnectionPool::new(
+            8,
+            16,
+            Duration::from_secs(5),
+            Duration::from_secs(300),
+        ))
+    }
+
     fn mock_ops_success(data: Vec<u8>) -> MockNfsOps {
         let mut mock = MockNfsOps::new();
+        mock.expect_root_handle()
+            .return_const(crate::nfs::NfsFh::new(vec![1, 2, 3]));
+        mock.expect_getattr().returning(|_| {
+            Ok(NfsAttrs {
+                file_type: NfsFileType::Directory,
+                size: 4096,
+                mode: 0o755,
+                uid: 0,
+                gid: 0,
+                mtime: 0,
+            })
+        });
         mock.expect_read().returning(move |_, _, _| {
             Ok(ReadResult {
                 data: data.clone(),
@@ -309,6 +417,18 @@ mod tests {
 
     fn mock_ops_permission_denied() -> MockNfsOps {
         let mut mock = MockNfsOps::new();
+        mock.expect_root_handle()
+            .return_const(crate::nfs::NfsFh::new(vec![1, 2, 3]));
+        mock.expect_getattr().returning(|_| {
+            Ok(NfsAttrs {
+                file_type: NfsFileType::Directory,
+                size: 4096,
+                mode: 0o755,
+                uid: 0,
+                gid: 0,
+                mtime: 0,
+            })
+        });
         mock.expect_read().returning(|_, _, _| {
             Err(Box::new(NfsError::PermissionDenied) as Box<dyn std::error::Error + Send + Sync>)
         });
@@ -343,13 +463,22 @@ mod tests {
             .times(1)
             .returning(|_, _, _| Ok(Box::new(mock_ops_success(b"data".to_vec()))));
 
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let fh = NfsFh::default();
         let attrs = test_attrs(1000, 1000);
         let auth = test_auth_strategy(true, vec![]);
 
         let result = read_with_uid_cycling(
-            &connector, "h", "/e", &fh, &attrs, &auth, &mut cache, 1_048_576,
+            &connector,
+            "h",
+            "/e",
+            &fh,
+            &attrs,
+            &auth,
+            &pool,
+            1_048_576,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
         )
         .await
         .unwrap();
@@ -370,13 +499,22 @@ mod tests {
                 }
             });
 
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let fh = NfsFh::default();
         let attrs = test_attrs(1000, 1000);
         let auth = test_auth_strategy(true, vec![]);
 
         let result = read_with_uid_cycling(
-            &connector, "h", "/e", &fh, &attrs, &auth, &mut cache, 1_048_576,
+            &connector,
+            "h",
+            "/e",
+            &fh,
+            &attrs,
+            &auth,
+            &pool,
+            1_048_576,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
         )
         .await
         .unwrap();
@@ -397,13 +535,22 @@ mod tests {
                 }
             });
 
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let fh = NfsFh::default();
         let attrs = test_attrs(1000, 1000);
         let auth = test_auth_strategy(true, vec![AuthCreds::new(2000, 2000)]);
 
         let result = read_with_uid_cycling(
-            &connector, "h", "/e", &fh, &attrs, &auth, &mut cache, 1_048_576,
+            &connector,
+            "h",
+            "/e",
+            &fh,
+            &attrs,
+            &auth,
+            &pool,
+            1_048_576,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
         )
         .await
         .unwrap();
@@ -417,13 +564,22 @@ mod tests {
             .expect_connect()
             .returning(|_, _, _| Ok(Box::new(mock_ops_permission_denied())));
 
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let fh = NfsFh::default();
         let attrs = test_attrs(1000, 1000);
         let auth = test_auth_strategy(true, vec![AuthCreds::new(2000, 2000)]);
 
         let err = read_with_uid_cycling(
-            &connector, "h", "/e", &fh, &attrs, &auth, &mut cache, 1_048_576,
+            &connector,
+            "h",
+            "/e",
+            &fh,
+            &attrs,
+            &auth,
+            &pool,
+            1_048_576,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
         )
         .await
         .unwrap_err();
@@ -441,13 +597,22 @@ mod tests {
             Ok(Box::new(mock))
         });
 
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let fh = NfsFh::default();
         let attrs = test_attrs(1000, 1000);
         let auth = test_auth_strategy(true, vec![AuthCreds::new(2000, 2000)]);
 
         let err = read_with_uid_cycling(
-            &connector, "h", "/e", &fh, &attrs, &auth, &mut cache, 1_048_576,
+            &connector,
+            "h",
+            "/e",
+            &fh,
+            &attrs,
+            &auth,
+            &pool,
+            1_048_576,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
         )
         .await
         .unwrap_err();
@@ -462,13 +627,22 @@ mod tests {
             .times(1)
             .returning(|_, _, _| Ok(Box::new(mock_ops_permission_denied())));
 
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let fh = NfsFh::default();
         let attrs = test_attrs(1000, 1000);
         let auth = test_auth_strategy(false, vec![]);
 
         let err = read_with_uid_cycling(
-            &connector, "h", "/e", &fh, &attrs, &auth, &mut cache, 1_048_576,
+            &connector,
+            "h",
+            "/e",
+            &fh,
+            &attrs,
+            &auth,
+            &pool,
+            1_048_576,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
         )
         .await
         .unwrap_err();
@@ -489,13 +663,22 @@ mod tests {
                 }
             });
 
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let fh = NfsFh::default();
         let attrs = test_attrs(0, 0); // owner == primary (root)
         let auth = test_auth_strategy(true, vec![AuthCreds::new(2000, 2000)]);
 
         let result = read_with_uid_cycling(
-            &connector, "h", "/e", &fh, &attrs, &auth, &mut cache, 1_048_576,
+            &connector,
+            "h",
+            "/e",
+            &fh,
+            &attrs,
+            &auth,
+            &pool,
+            1_048_576,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
         )
         .await
         .unwrap();
@@ -516,7 +699,7 @@ mod tests {
                 }
             });
 
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let fh = NfsFh::default();
         let attrs = test_attrs(1000, 1000);
         // Harvested includes duplicates of primary (root) and owner (uid=1000)
@@ -530,7 +713,16 @@ mod tests {
         );
 
         let result = read_with_uid_cycling(
-            &connector, "h", "/e", &fh, &attrs, &auth, &mut cache, 1_048_576,
+            &connector,
+            "h",
+            "/e",
+            &fh,
+            &attrs,
+            &auth,
+            &pool,
+            1_048_576,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
         )
         .await
         .unwrap();
@@ -546,7 +738,7 @@ mod tests {
             .times(4)
             .returning(|_, _, _| Ok(Box::new(mock_ops_permission_denied())));
 
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let fh = NfsFh::default();
         let attrs = test_attrs(1000, 1000);
         let mut auth = test_auth_strategy(
@@ -562,7 +754,16 @@ mod tests {
         auth.max_attempts = 2;
 
         let err = read_with_uid_cycling(
-            &connector, "h", "/e", &fh, &attrs, &auth, &mut cache, 1_048_576,
+            &connector,
+            "h",
+            "/e",
+            &fh,
+            &attrs,
+            &auth,
+            &pool,
+            1_048_576,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
         )
         .await
         .unwrap_err();
@@ -580,12 +781,9 @@ mod tests {
             }
         });
 
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let fh = NfsFh::default();
         let attrs = test_attrs(1000, 1000);
-        // Harvested list has duplicates of primary (root=0) and owner (1000)
-        // before the actual unique UID (5000).
-        // With max_attempts=2, old code .take(2) consumes the two dups and never tries 5000.
         let mut auth = test_auth_strategy(
             true,
             vec![
@@ -597,7 +795,16 @@ mod tests {
         auth.max_attempts = 2;
 
         let result = read_with_uid_cycling(
-            &connector, "h", "/e", &fh, &attrs, &auth, &mut cache, 1_048_576,
+            &connector,
+            "h",
+            "/e",
+            &fh,
+            &attrs,
+            &auth,
+            &pool,
+            1_048_576,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
         )
         .await;
 
@@ -609,30 +816,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uid_cycling_uses_connection_cache() {
+    async fn uid_cycling_reuses_pooled_connection() {
         let mut connector = MockNfsConnector::new();
         connector
             .expect_connect()
             .times(1)
-            .returning(|_, _, _| Ok(Box::new(mock_ops_success(b"cached".to_vec()))));
+            .returning(|_, _, _| Ok(Box::new(mock_ops_success(b"pooled".to_vec()))));
 
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let fh = NfsFh::default();
         let attrs = test_attrs(1000, 1000);
         let auth = test_auth_strategy(true, vec![]);
 
         let r1 = read_with_uid_cycling(
-            &connector, "h", "/e", &fh, &attrs, &auth, &mut cache, 1_048_576,
+            &connector,
+            "h",
+            "/e",
+            &fh,
+            &attrs,
+            &auth,
+            &pool,
+            1_048_576,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
         )
         .await
         .unwrap();
+        // Allow the Drop return_connection to complete
+        tokio::task::yield_now().await;
         let r2 = read_with_uid_cycling(
-            &connector, "h", "/e", &fh, &attrs, &auth, &mut cache, 1_048_576,
+            &connector,
+            "h",
+            "/e",
+            &fh,
+            &attrs,
+            &auth,
+            &pool,
+            1_048_576,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
         )
         .await
         .unwrap();
-        assert_eq!(r1, b"cached");
-        assert_eq!(r2, b"cached");
+        assert_eq!(r1, b"pooled");
+        assert_eq!(r2, b"pooled");
     }
 
     fn test_file_msg(name: &str) -> FileMsg {
@@ -696,6 +923,9 @@ mod tests {
             max_size: None,
             context_bytes: None,
             description: None,
+            exclude_patterns: None,
+            skip_comments: None,
+            exclude_file_paths: None,
         }
     }
 
@@ -717,6 +947,9 @@ mod tests {
             max_size: None,
             context_bytes: None,
             description: None,
+            exclude_patterns: None,
+            skip_comments: None,
+            exclude_file_paths: None,
         }
     }
 
@@ -741,7 +974,7 @@ mod tests {
             .returning(|_, _, _| Ok(Box::new(mock_ops_success(b"not a key".to_vec()))));
         let auth = test_auth_strategy(true, vec![]);
         let stats = PipelineStats::default();
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let msg = test_file_msg("id_rsa");
 
         let results = scan_file(
@@ -751,9 +984,14 @@ mod tests {
             &auth,
             OperatingMode::Scan,
             1_048_576,
-            &mut cache,
+            DEFAULT_CHUNK_SIZE,
+            &pool,
             &stats,
             &HostHealthRegistry::default(),
+            TEST_TIMEOUT,
+            0,
+            0,
+            &CancellationToken::new(),
         )
         .await;
 
@@ -791,7 +1029,7 @@ mod tests {
             .returning(|_, _, _| Ok(Box::new(mock_ops_success(b"photo data".to_vec()))));
         let auth = test_auth_strategy(true, vec![]);
         let stats = PipelineStats::default();
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let msg = test_file_msg("photo.jpg");
 
         let results = scan_file(
@@ -801,9 +1039,14 @@ mod tests {
             &auth,
             OperatingMode::Scan,
             1_048_576,
-            &mut cache,
+            DEFAULT_CHUNK_SIZE,
+            &pool,
             &stats,
             &HostHealthRegistry::default(),
+            TEST_TIMEOUT,
+            0,
+            0,
+            &CancellationToken::new(),
         )
         .await;
 
@@ -824,6 +1067,9 @@ mod tests {
             max_size: None,
             context_bytes: None,
             description: None,
+            exclude_patterns: None,
+            skip_comments: None,
+            exclude_file_paths: None,
         };
         let content_rule = make_content_rule(
             "ContentCheck",
@@ -835,7 +1081,7 @@ mod tests {
         let connector = noop_connector();
         let auth = test_auth_strategy(true, vec![]);
         let stats = PipelineStats::default();
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let msg = test_file_msg("config.env");
 
         let results = scan_file(
@@ -845,9 +1091,14 @@ mod tests {
             &auth,
             OperatingMode::Enumerate,
             1_048_576,
-            &mut cache,
+            DEFAULT_CHUNK_SIZE,
+            &pool,
             &stats,
             &HostHealthRegistry::default(),
+            TEST_TIMEOUT,
+            0,
+            0,
+            &CancellationToken::new(),
         )
         .await;
 
@@ -869,6 +1120,9 @@ mod tests {
             max_size: None,
             context_bytes: None,
             description: None,
+            exclude_patterns: None,
+            skip_comments: None,
+            exclude_file_paths: None,
         };
         let content_rule = make_content_rule(
             "ContentPassword",
@@ -884,7 +1138,7 @@ mod tests {
         });
         let auth = test_auth_strategy(true, vec![]);
         let stats = PipelineStats::default();
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let engine = RuleEngine::compile(vec![relay_rule, content_rule]).unwrap();
         let msg = test_file_msg("config.env");
 
@@ -895,9 +1149,14 @@ mod tests {
             &auth,
             OperatingMode::Scan,
             1_048_576,
-            &mut cache,
+            DEFAULT_CHUNK_SIZE,
+            &pool,
             &stats,
             &HostHealthRegistry::default(),
+            TEST_TIMEOUT,
+            0,
+            0,
+            &CancellationToken::new(),
         )
         .await;
 
@@ -932,6 +1191,9 @@ mod tests {
             max_size: None,
             context_bytes: None,
             description: None,
+            exclude_patterns: None,
+            skip_comments: None,
+            exclude_file_paths: None,
         };
         let content_rule = make_content_rule(
             "TextContent",
@@ -949,7 +1211,7 @@ mod tests {
             .returning(move |_, _, _| Ok(Box::new(mock_ops_success(data.clone()))));
         let auth = test_auth_strategy(true, vec![]);
         let stats = PipelineStats::default();
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let engine = RuleEngine::compile(vec![relay_rule, content_rule]).unwrap();
         let msg = test_file_msg("test.bin");
 
@@ -960,9 +1222,14 @@ mod tests {
             &auth,
             OperatingMode::Scan,
             1_048_576,
-            &mut cache,
+            DEFAULT_CHUNK_SIZE,
+            &pool,
             &stats,
             &HostHealthRegistry::default(),
+            TEST_TIMEOUT,
+            0,
+            0,
+            &CancellationToken::new(),
         )
         .await;
 
@@ -998,7 +1265,7 @@ mod tests {
             .returning(move |_, _, _| Ok(Box::new(mock_ops_success(key_data.clone()))));
         let auth = test_auth_strategy(true, vec![]);
         let stats = PipelineStats::default();
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let engine = RuleEngine::compile(vec![rule]).unwrap();
         let msg = test_file_msg("id_rsa");
 
@@ -1009,9 +1276,14 @@ mod tests {
             &auth,
             OperatingMode::Scan,
             1_048_576,
-            &mut cache,
+            DEFAULT_CHUNK_SIZE,
+            &pool,
             &stats,
             &HostHealthRegistry::default(),
+            TEST_TIMEOUT,
+            0,
+            0,
+            &CancellationToken::new(),
         )
         .await;
 
@@ -1039,7 +1311,7 @@ mod tests {
             .returning(move |_, _, _| Ok(Box::new(mock_ops_success(key_data.clone()))));
         let auth = test_auth_strategy(true, vec![]);
         let stats = PipelineStats::default();
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let engine = RuleEngine::compile(vec![rule]).unwrap();
         let msg = test_file_msg("id_rsa");
 
@@ -1050,9 +1322,14 @@ mod tests {
             &auth,
             OperatingMode::Scan,
             1_048_576,
-            &mut cache,
+            DEFAULT_CHUNK_SIZE,
+            &pool,
             &stats,
             &HostHealthRegistry::default(),
+            TEST_TIMEOUT,
+            0,
+            0,
+            &CancellationToken::new(),
         )
         .await;
 
@@ -1075,6 +1352,9 @@ mod tests {
             max_size: None,
             context_bytes: None,
             description: None,
+            exclude_patterns: None,
+            skip_comments: None,
+            exclude_file_paths: None,
         };
         let content_rule = make_content_rule(
             "ContentCheck",
@@ -1092,7 +1372,7 @@ mod tests {
         });
         let auth = test_auth_strategy(true, vec![]);
         let stats = PipelineStats::default();
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let engine = RuleEngine::compile(vec![relay_rule, content_rule]).unwrap();
         let msg = test_file_msg("config.env");
 
@@ -1103,9 +1383,14 @@ mod tests {
             &auth,
             OperatingMode::Scan,
             1_048_576,
-            &mut cache,
+            DEFAULT_CHUNK_SIZE,
+            &pool,
             &stats,
             &HostHealthRegistry::default(),
+            TEST_TIMEOUT,
+            0,
+            0,
+            &CancellationToken::new(),
         )
         .await;
 
@@ -1129,7 +1414,7 @@ mod tests {
             .returning(|_, _, _| Ok(Box::new(mock_ops_permission_denied())));
         let auth = test_auth_strategy(true, vec![]);
         let stats = PipelineStats::default();
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let engine = RuleEngine::compile(vec![rule]).unwrap();
         let msg = test_file_msg("config.env");
 
@@ -1140,9 +1425,14 @@ mod tests {
             &auth,
             OperatingMode::Scan,
             1_048_576,
-            &mut cache,
+            DEFAULT_CHUNK_SIZE,
+            &pool,
             &stats,
             &HostHealthRegistry::default(),
+            TEST_TIMEOUT,
+            0,
+            0,
+            &CancellationToken::new(),
         )
         .await;
 
@@ -1170,6 +1460,9 @@ mod tests {
             max_size: None,
             context_bytes: None,
             description: None,
+            exclude_patterns: None,
+            skip_comments: None,
+            exclude_file_paths: None,
         };
         let content_rule = make_content_rule(
             "FindApiKey",
@@ -1181,7 +1474,7 @@ mod tests {
         let connector = noop_connector();
         let auth = test_auth_strategy(true, vec![]);
         let stats = PipelineStats::default();
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let msg = test_file_msg_local("config.txt", tmp.path().to_path_buf());
 
         let results = scan_file(
@@ -1191,9 +1484,14 @@ mod tests {
             &auth,
             OperatingMode::Scan,
             1_048_576,
-            &mut cache,
+            DEFAULT_CHUNK_SIZE,
+            &pool,
             &stats,
             &HostHealthRegistry::default(),
+            TEST_TIMEOUT,
+            0,
+            0,
+            &CancellationToken::new(),
         )
         .await;
 
@@ -1217,7 +1515,7 @@ mod tests {
             .returning(|_, _, _| Ok(Box::new(mock_ops_success(b"some content".to_vec()))));
         let auth = test_auth_strategy(true, vec![]);
         let stats = PipelineStats::default();
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let engine = RuleEngine::compile(vec![rule]).unwrap();
         let msg = test_file_msg("config.env");
 
@@ -1228,18 +1526,19 @@ mod tests {
             &auth,
             OperatingMode::Scan,
             1_048_576,
-            &mut cache,
+            DEFAULT_CHUNK_SIZE,
+            &pool,
             &stats,
             &HostHealthRegistry::default(),
+            TEST_TIMEOUT,
+            0,
+            0,
+            &CancellationToken::new(),
         )
         .await;
 
-        let env_results: Vec<_> = results
-            .iter()
-            .filter(|r| r.rule_name == "KeepEnv")
-            .collect();
         assert_eq!(
-            env_results.len(),
+            results.iter().filter(|r| r.rule_name == "KeepEnv").count(),
             1,
             "name-only finding should not be duplicated when content is also scanned"
         );
@@ -1259,6 +1558,9 @@ mod tests {
             max_size: None,
             context_bytes: None,
             description: None,
+            exclude_patterns: None,
+            skip_comments: None,
+            exclude_file_paths: None,
         };
         let content_rule = make_content_rule(
             "FindWord",
@@ -1274,7 +1576,7 @@ mod tests {
             .returning(move |_, _, _| Ok(Box::new(mock_ops_success(content_data.clone()))));
         let auth = test_auth_strategy(true, vec![]);
         let stats = PipelineStats::default();
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let engine = RuleEngine::compile(vec![relay_rule, content_rule]).unwrap();
         let msg = test_file_msg("data.txt");
 
@@ -1285,9 +1587,14 @@ mod tests {
             &auth,
             OperatingMode::Scan,
             1_048_576,
-            &mut cache,
+            DEFAULT_CHUNK_SIZE,
+            &pool,
             &stats,
             &HostHealthRegistry::default(),
+            TEST_TIMEOUT,
+            0,
+            0,
+            &CancellationToken::new(),
         )
         .await;
 
@@ -1324,6 +1631,9 @@ mod tests {
             max_size: None,
             context_bytes: None,
             description: None,
+            exclude_patterns: None,
+            skip_comments: None,
+            exclude_file_paths: None,
         };
         let content_rule = make_content_rule(
             "ContentCheck",
@@ -1343,10 +1653,9 @@ mod tests {
         });
         let auth = test_auth_strategy(true, vec![]); // No harvested UIDs in AuthStrategy
         let stats = PipelineStats::default();
-        let mut cache = ConnectionCache::new();
+        let pool = test_pool();
         let engine = RuleEngine::compile(vec![relay_rule, content_rule]).unwrap();
         let mut msg = test_file_msg("config.env");
-        // Attach harvested UIDs to the FileMsg (simulating discovery → walker propagation)
         msg.harvested_uids = vec![AuthCreds::new(5000, 5000)];
 
         let results = scan_file(
@@ -1356,9 +1665,14 @@ mod tests {
             &auth,
             OperatingMode::Scan,
             1_048_576,
-            &mut cache,
+            DEFAULT_CHUNK_SIZE,
+            &pool,
             &stats,
             &HostHealthRegistry::default(),
+            TEST_TIMEOUT,
+            0,
+            0,
+            &CancellationToken::new(),
         )
         .await;
 
@@ -1366,6 +1680,82 @@ mod tests {
         assert!(
             content_result.is_some(),
             "harvested UIDs from FileMsg should enable reading the file"
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_file_retries_on_connection_lost() {
+        let relay_rule = ClassifierRule {
+            name: "RelayEnv".into(),
+            scope: EnumerationScope::FileEnumeration,
+            match_location: MatchLocation::FileExtension,
+            match_type: MatchType::Exact,
+            patterns: vec!["env".into()],
+            action: MatchAction::Relay,
+            triage: None,
+            relay_targets: Some(vec!["ContentCheck".into()]),
+            max_size: None,
+            context_bytes: None,
+            description: None,
+            exclude_patterns: None,
+            skip_comments: None,
+            exclude_file_paths: None,
+        };
+        let content_rule = make_content_rule(
+            "ContentCheck",
+            MatchType::Contains,
+            vec!["SECRET"],
+            Some(Triage::Red),
+        );
+        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let cc = call_count.clone();
+        let mut connector = MockNfsConnector::new();
+        connector.expect_connect().returning(move |_, _, _| {
+            let n = cc.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n == 0 {
+                let mut mock = MockNfsOps::new();
+                mock.expect_read().returning(|_, _, _| {
+                    Err(Box::new(NfsError::ConnectionLost)
+                        as Box<dyn std::error::Error + Send + Sync>)
+                });
+                Ok(Box::new(mock))
+            } else {
+                Ok(Box::new(mock_ops_success(b"MY_SECRET=found".to_vec())))
+            }
+        });
+        let auth = test_auth_strategy(false, vec![]);
+        let stats = PipelineStats::default();
+        let pool = test_pool();
+        let engine = RuleEngine::compile(vec![relay_rule, content_rule]).unwrap();
+        let msg = test_file_msg("config.env");
+
+        let results = scan_file(
+            &msg,
+            &engine,
+            &connector,
+            &auth,
+            OperatingMode::Scan,
+            1_048_576,
+            DEFAULT_CHUNK_SIZE,
+            &pool,
+            &stats,
+            &HostHealthRegistry::default(),
+            TEST_TIMEOUT,
+            2,
+            0,
+            &CancellationToken::new(),
+        )
+        .await;
+
+        let content_result = results.iter().find(|r| r.rule_name == "ContentCheck");
+        assert!(
+            content_result.is_some(),
+            "retry should succeed on second attempt"
+        );
+        assert_eq!(
+            stats.scanner_retries.load(Ordering::Relaxed),
+            1,
+            "should have recorded one retry"
         );
     }
 }

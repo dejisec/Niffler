@@ -1,31 +1,40 @@
 use std::io::Read;
-use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::nfs::{NfsFh, NfsOps};
 
 use super::error::ScannerError;
 
-pub const DEFAULT_CHUNK_SIZE: u32 = 65536;
+#[cfg(test)]
+pub const DEFAULT_CHUNK_SIZE: u32 = 1_048_576;
 
 /// Check if data is likely binary by looking for null bytes anywhere in the scan buffer.
+#[must_use]
 pub fn is_likely_binary(data: &[u8]) -> bool {
     data.contains(&0)
 }
 
 /// Read file content via chunked NFS READ calls, capped at `max_scan_size`.
+/// Each individual READ RPC is bounded by `nfs_timeout`.
 pub async fn read_for_scan(
     client: &mut dyn NfsOps,
     fh: &NfsFh,
     max_scan_size: u64,
     file_size: u64,
+    nfs_timeout: Duration,
+    chunk_size: u32,
 ) -> Result<Vec<u8>, ScannerError> {
     let to_read = file_size.min(max_scan_size);
-    let mut buf = Vec::with_capacity(to_read as usize);
+    let capped_capacity = to_read.min(16 * 1024 * 1024) as usize; // 16 MiB max initial alloc
+    let mut buf = Vec::with_capacity(capped_capacity);
     let mut offset = 0u64;
 
     while offset < to_read {
-        let chunk_size = (to_read - offset).min(DEFAULT_CHUNK_SIZE as u64) as u32;
-        let result = client.read(fh, offset, chunk_size).await?;
+        let chunk_size_param = (to_read - offset).min(chunk_size as u64) as u32;
+        let result = tokio::time::timeout(nfs_timeout, client.read(fh, offset, chunk_size_param))
+            .await
+            .map_err(|_| ScannerError::Timeout(format!("read timeout at offset {offset}")))??;
         if result.data.is_empty() {
             break;
         }
@@ -40,11 +49,19 @@ pub async fn read_for_scan(
 }
 
 /// Read file content from the local filesystem, capped at `max_scan_size`.
-pub fn read_local_for_scan(path: &Path, max_scan_size: u64) -> Result<Vec<u8>, ScannerError> {
-    let file = std::fs::File::open(path)?;
-    let mut buf = Vec::new();
-    file.take(max_scan_size).read_to_end(&mut buf)?;
-    Ok(buf)
+/// Uses `spawn_blocking` to avoid blocking the tokio runtime thread.
+pub async fn read_local_for_scan(
+    path: PathBuf,
+    max_scan_size: u64,
+) -> Result<Vec<u8>, ScannerError> {
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&path)?;
+        let mut buf = Vec::new();
+        file.take(max_scan_size).read_to_end(&mut buf)?;
+        Ok(buf)
+    })
+    .await
+    .map_err(|e| ScannerError::Io(std::io::Error::other(e.to_string())))?
 }
 
 #[cfg(test)]
@@ -53,53 +70,17 @@ mod tests {
     use crate::nfs::ops::MockNfsOps;
     use crate::nfs::{NfsError, ReadResult};
 
-    #[test]
-    fn binary_detection_null_byte_at_start() {
-        assert!(is_likely_binary(&[0, 65, 66, 67]));
-    }
+    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
     #[test]
-    fn binary_detection_null_byte_in_middle() {
+    fn binary_detection() {
         assert!(is_likely_binary(b"hello\0world"));
-    }
-
-    #[test]
-    fn binary_detection_null_byte_at_8191() {
-        let mut data = vec![0x41u8; 8192];
-        data[8191] = 0x00;
-        assert!(is_likely_binary(&data));
-    }
-
-    #[test]
-    fn binary_detection_null_byte_beyond_8192() {
-        let mut data = vec![0x41u8; 16384];
-        data[8192] = 0x00;
-        assert!(is_likely_binary(&data));
-    }
-
-    #[test]
-    fn binary_detection_pure_text() {
         assert!(!is_likely_binary(b"This is plain text\nwith newlines\n"));
-    }
-
-    #[test]
-    fn binary_detection_empty_data() {
         assert!(!is_likely_binary(b""));
-    }
 
-    #[test]
-    fn binary_detection_short_data() {
-        assert!(!is_likely_binary(b"hi"));
-    }
-
-    #[test]
-    fn binary_detection_checks_full_scan_buffer() {
-        let mut data = vec![0x41u8; 16384];
-        data[10000] = 0x00;
-        assert!(
-            is_likely_binary(&data),
-            "null bytes anywhere in the scan buffer should trigger binary detection"
-        );
+        let mut large = vec![0x41u8; 16384];
+        large[10000] = 0x00;
+        assert!(is_likely_binary(&large));
     }
 
     #[tokio::test]
@@ -114,9 +95,16 @@ mod tests {
             })
         });
 
-        let result = read_for_scan(&mut mock, &fh, 1_048_576, 1000)
-            .await
-            .unwrap();
+        let result = read_for_scan(
+            &mut mock,
+            &fh,
+            1_048_576,
+            1000,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
+        )
+        .await
+        .unwrap();
         assert_eq!(result.len(), 1000);
     }
 
@@ -141,7 +129,7 @@ mod tests {
             }
         });
 
-        let result = read_for_scan(&mut mock, &fh, 1_048_576, 95536)
+        let result = read_for_scan(&mut mock, &fh, 1_048_576, 95536, TEST_TIMEOUT, 65536)
             .await
             .unwrap();
         assert_eq!(result.len(), 95536);
@@ -161,9 +149,16 @@ mod tests {
             })
         });
 
-        let result = read_for_scan(&mut mock, &fh, 1_048_576, 5000)
-            .await
-            .unwrap();
+        let result = read_for_scan(
+            &mut mock,
+            &fh,
+            1_048_576,
+            5000,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
+        )
+        .await
+        .unwrap();
         assert_eq!(result.len(), 100);
     }
 
@@ -180,9 +175,16 @@ mod tests {
             })
         });
 
-        let result = read_for_scan(&mut mock, &fh, 100_000, 2_000_000)
-            .await
-            .unwrap();
+        let result = read_for_scan(
+            &mut mock,
+            &fh,
+            100_000,
+            2_000_000,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
+        )
+        .await
+        .unwrap();
         assert!(result.len() <= 100_000);
     }
 
@@ -198,9 +200,16 @@ mod tests {
             })
         });
 
-        let result = read_for_scan(&mut mock, &fh, 1_048_576, 5000)
-            .await
-            .unwrap();
+        let result = read_for_scan(
+            &mut mock,
+            &fh,
+            1_048_576,
+            5000,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
+        )
+        .await
+        .unwrap();
         assert!(result.is_empty());
     }
 
@@ -213,42 +222,53 @@ mod tests {
             Err(Box::new(NfsError::PermissionDenied) as Box<dyn std::error::Error + Send + Sync>)
         });
 
-        let err = read_for_scan(&mut mock, &fh, 1_048_576, 5000)
-            .await
-            .unwrap_err();
+        let err = read_for_scan(
+            &mut mock,
+            &fh,
+            1_048_576,
+            5000,
+            TEST_TIMEOUT,
+            DEFAULT_CHUNK_SIZE,
+        )
+        .await
+        .unwrap_err();
         assert!(
             matches!(err, ScannerError::Nfs(NfsError::PermissionDenied)),
             "expected Nfs(PermissionDenied), got: {err:?}"
         );
     }
 
-    #[test]
-    fn local_read_full_file() {
+    #[tokio::test]
+    async fn local_read_full_file() {
         use std::io::Write;
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         let content = vec![0x42u8; 500];
         tmp.write_all(&content).unwrap();
         tmp.flush().unwrap();
 
-        let result = read_local_for_scan(tmp.path(), 1_048_576).unwrap();
+        let result = read_local_for_scan(tmp.path().to_path_buf(), 1_048_576)
+            .await
+            .unwrap();
         assert_eq!(result.len(), 500);
         assert_eq!(result, content);
     }
 
-    #[test]
-    fn local_read_capped_by_max_scan_size() {
+    #[tokio::test]
+    async fn local_read_capped_by_max_scan_size() {
         use std::io::Write;
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         tmp.write_all(&vec![0x42u8; 10000]).unwrap();
         tmp.flush().unwrap();
 
-        let result = read_local_for_scan(tmp.path(), 5000).unwrap();
+        let result = read_local_for_scan(tmp.path().to_path_buf(), 5000)
+            .await
+            .unwrap();
         assert_eq!(result.len(), 5000);
     }
 
-    #[test]
-    fn local_read_file_not_found() {
-        let result = read_local_for_scan(Path::new("/nonexistent/file.txt"), 1_048_576);
+    #[tokio::test]
+    async fn local_read_file_not_found() {
+        let result = read_local_for_scan(PathBuf::from("/nonexistent/file.txt"), 1_048_576).await;
         assert!(result.is_err());
     }
 }

@@ -47,13 +47,3 @@ patterns = ["Makefile", "Rakefile", "Vagrantfile", "Jenkinsfile", "Procfile"]
 action = "Snaffle"
 triage = "Green"
 description = "Build and orchestration files -- reveal infrastructure details"
-
-[[rules]]
-name = "RootOwnedFiles"
-scope = "FileEnumeration"
-match_location = "FileOwnerUid"
-match_type = "Exact"
-patterns = ["0"]
-action = "Snaffle"
-triage = "Green"
-description = "Root-owned files on NFS share -- informational for privilege assessment"
